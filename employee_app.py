@@ -350,7 +350,7 @@ else:
                     
                     with st.form(key=f"comment_form_{task['id']}", clear_on_submit=True):
                         comment_content = st.text_area("Thêm bình luận của bạn:", key=f"comment_text_{task['id']}", label_visibility="collapsed", placeholder="Nhập trao đổi về công việc...")
-                        uploaded_file = st.file_uploader("Đính kèm file (Word, <2MB)", type=['doc', 'docx'], accept_multiple_files=False, key=f"file_{task['id']}")
+                        uploaded_file = st.file_uploader("Đính kèm file (Word, RAR, ZIP <2MB)", type=['doc', 'docx', 'rar', 'zip'], accept_multiple_files=False, key=f"file_{task['id']}")
                         
                         submitted_comment = st.form_submit_button("Gửi bình luận")
                         if submitted_comment and (comment_content or uploaded_file):
