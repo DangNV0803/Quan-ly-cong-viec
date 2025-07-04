@@ -80,7 +80,7 @@ def fetch_all_projects_new(_client: Client):
 def fetch_all_tasks_and_details(_client: Client):
     """Fetches all tasks and joins related data like project and profile names."""
     try:
-        tasks_res = _client.table('tasks').select('*, projects(project_name)').order('created_at', desc=True).execute()
+        tasks_res = _client.table('tasks').select('*, projects(project_name, old_project_ref_id)').order('created_at', desc=True).execute()
         tasks = tasks_res.data if tasks_res.data else []
         profiles = fetch_all_profiles(_client)
         if profiles is None: profiles = []
@@ -501,11 +501,24 @@ else:
         else:
             tasks_by_project = defaultdict(list)
             for task in all_tasks:
-                project_name = task.get('project_name', 'Không thuộc dự án cụ thể')
-                tasks_by_project[project_name].append(task)
+                project_info = task.get('projects')
+                if project_info:
+                    project_name = project_info.get('project_name', 'Dự án không tên')
+                    project_code = project_info.get('old_project_ref_id')
+                    # Dùng một tuple (bộ) làm key để gom nhóm
+                    project_key = (project_name, project_code)
+                else:
+                    project_key = ('Không thuộc dự án cụ thể', None)
+
+                tasks_by_project[project_key].append(task)
                 
-            for project_name, tasks_in_project in tasks_by_project.items():
-                st.subheader(f"Dự án: {project_name}")
+            for (project_name, project_code), tasks_in_project in tasks_by_project.items():
+                # Tạo tiêu đề động, có thêm mã dự án nếu tồn tại
+                display_title = f"Dự án: {project_name}"
+                if project_code:
+                    display_title += f" (Mã: {project_code})"
+
+                st.subheader(display_title)
                 for task in tasks_in_project:
                     comments = fetch_comments(task['id'])
                     has_new_message = False

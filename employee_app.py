@@ -35,7 +35,7 @@ supabase = init_supabase_client()
 def fetch_my_tasks(user_id: str):
     """Fetches tasks assigned to the current logged-in user, ordered by due date."""
     try:
-        response = supabase.table('tasks').select('*, projects(project_name, id)').eq('assigned_to', user_id).order('due_date', desc=False).execute()
+        response = supabase.table('tasks').select('*, projects(project_name, id, old_project_ref_id)').eq('assigned_to', user_id).order('due_date', desc=False).execute()
         return response.data if response.data else []
     except Exception as e:
         st.error(f"Lỗi khi tải công việc: {e}")
@@ -258,13 +258,23 @@ else:
         tasks_by_project = defaultdict(list)
         for task in my_tasks:
             project_info = task.get('projects')
-            project_name = project_info['project_name'] if project_info and project_info.get('project_name') else "Công việc chung"
-            tasks_by_project[project_name].append(task)
+            if project_info:
+                project_name = project_info.get('project_name', 'Dự án không tên')
+                project_code = project_info.get('old_project_ref_id')
+                project_key = (project_name, project_code)
+            else:
+                project_key = ("Công việc chung", None)
+            tasks_by_project[project_key].append(task)
         
         sorted_projects = sorted(tasks_by_project.items(), key=lambda item: min(t['due_date'] for t in item[1]))
 
-        for project_name, tasks in sorted_projects:
-            st.subheader(f"Dự án: {project_name}")
+        for (project_name, project_code), tasks in sorted_projects:
+            # Tạo tiêu đề động, có thêm mã dự án nếu tồn tại
+            display_title = f"Dự án: {project_name}"
+            if project_code:
+                display_title += f" (Mã: {project_code})"
+
+            st.subheader(display_title)
             for task in tasks:
                 comments = fetch_comments(task['id'])
                 
