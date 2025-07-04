@@ -195,9 +195,19 @@ else:
     user_role = profile_res.data.get('role', 'employee') if profile_res.data else 'employee'
 
     st.title(f"Chào mừng, {user.user_metadata.get('full_name', user.email)}!")
-    if st.button("Đăng xuất"):
+    # Sử dụng cột để đặt các nút cạnh nhau
+    col1, col2, _ = st.columns([0.2, 0.2, 0.6]) 
+
+    if col1.button("Đăng xuất"):
         supabase.auth.sign_out()
         st.session_state.user = None
+        st.rerun()
+
+    if col2.button("🔄 Làm mới"):
+        # Xóa cache để buộc tải lại công việc mới
+        st.cache_data.clear()
+        st.toast("Đã làm mới dữ liệu!", icon="🔄")
+        # Chạy lại ứng dụng để hiển thị dữ liệu mới
         st.rerun()
         
     with st.expander("🔑 Đổi mật khẩu"):

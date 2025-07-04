@@ -399,6 +399,13 @@ else:
         st.session_state.user = None
         st.session_state.manager_profile = None
         st.rerun()
+    
+    if st.sidebar.button("🔄 Làm mới dữ liệu", use_container_width=True):
+        # Xóa cache để buộc tải lại dữ liệu mới từ database
+        st.cache_data.clear()
+        st.toast("Đã làm mới dữ liệu!", icon="🔄")
+        # Chạy lại ứng dụng để hiển thị dữ liệu mới
+        st.rerun()
 
     st.title("👨‍💼 Hệ thống Quản lý Công việc")
 
@@ -437,8 +444,13 @@ else:
                     selected_employee_display = st.selectbox("3. Giao cho nhân viên:", options=employee_options.keys())
                 with col2_task:
                     priority = st.selectbox("4. Độ ưu tiên:", options=['Medium', 'High', 'Low'], index=0)
-                    deadline_date = st.date_input("5. Hạn chót (ngày):", min_value=datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date())
-                    deadline_hour = st.time_input("6. Hạn chót (giờ):")
+                    # Khai báo múi giờ Việt Nam
+                    local_tz = ZoneInfo("Asia/Ho_Chi_Minh")
+                    # Lấy giờ hiện tại theo múi giờ Việt Nam
+                    current_time_vn = datetime.now(local_tz)
+                    deadline_date = st.date_input("5. Hạn chót (ngày):", min_value=current_time_vn.date())
+                    # Thêm `value` để mặc định là giờ hiện tại
+                    deadline_hour = st.time_input("6. Hạn chót (giờ):", value=current_time_vn.time())
                     description = st.text_area("7. Mô tả chi tiết:", height=150)
                 submitted = st.form_submit_button("🚀 Giao việc")
                 if submitted:
