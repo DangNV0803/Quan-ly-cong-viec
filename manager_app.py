@@ -591,24 +591,25 @@ else:
                             with st.form(key=f"edit_form_{task['id']}", clear_on_submit=True):
                                 st.markdown("##### **📝 Cập nhật thông tin công việc**")
                                 
-                                # --- Chuẩn bị dữ liệu cho các lựa chọn ---
+                                # --- MỚI: Thêm ô nhập liệu cho Tên công việc ---
+                                new_task_name = st.text_input("Tên công việc", value=task.get('task_name', ''))
+                                
+                                # --- Chuẩn bị dữ liệu cho các lựa chọn (giữ nguyên) ---
                                 project_options_map = {p['project_name']: p['id'] for p in all_projects_new} if all_projects_new else {}
                                 project_names = list(project_options_map.keys())
                                 
-                                # MỚI: Dữ liệu cho lựa chọn nhân viên
                                 employee_options_map = {e['full_name']: e['id'] for e in active_employees}
                                 employee_names = list(employee_options_map.keys())
                                 
                                 priorities = ['Low', 'Medium', 'High']
                                 
-                                # --- Tìm index mặc định cho các lựa chọn ---
+                                # --- Tìm index mặc định cho các lựa chọn (giữ nguyên) ---
                                 current_project_name = task.get('projects', {}).get('project_name')
                                 try:
                                     default_proj_index = project_names.index(current_project_name) if current_project_name else 0
                                 except ValueError:
                                     default_proj_index = 0
                                 
-                                # MỚI: Index mặc định cho nhân viên
                                 current_assignee_name = task.get('assignee_name')
                                 try:
                                     default_employee_index = employee_names.index(current_assignee_name) if current_assignee_name in employee_names else 0
@@ -626,12 +627,11 @@ else:
                                 except (ValueError, TypeError):
                                     current_due_datetime = datetime.now(local_tz)
 
-                                # --- Bố cục form ---
+                                # --- Bố cục form (giữ nguyên) ---
                                 col1, col2 = st.columns(2)
                                 with col1:
                                     new_project_name = st.selectbox("Dự án", options=project_names, index=default_proj_index, key=f"proj_edit_{task['id']}")
                                 with col2:
-                                    # MỚI: Lựa chọn để thay đổi nhân viên
                                     new_assignee_name = st.selectbox("Giao cho nhân viên", options=employee_names, index=default_employee_index, key=f"assignee_edit_{task['id']}")
 
                                 col3, col4, col5 = st.columns(3)
@@ -647,12 +647,15 @@ else:
                                 if submitted_edit:
                                     updates_dict = {}
                                     
-                                    # Logic kiểm tra và thêm các thay đổi vào dictionary
+                                    # --- MỚI: Logic cập nhật Tên công việc ---
+                                    if new_task_name and new_task_name != task.get('task_name'):
+                                        updates_dict['task_name'] = new_task_name
+
+                                    # --- Logic cập nhật khác (giữ nguyên) ---
                                     selected_project_id = project_options_map.get(new_project_name)
                                     if selected_project_id and selected_project_id != task.get('project_id'):
                                         updates_dict['project_id'] = selected_project_id
 
-                                    # MỚI: Logic cập nhật nhân viên
                                     selected_employee_id = employee_options_map.get(new_assignee_name)
                                     if selected_employee_id and selected_employee_id != task.get('assigned_to'):
                                         updates_dict['assigned_to'] = selected_employee_id
@@ -678,7 +681,6 @@ else:
                         # --- Phần hiển thị thông tin chi tiết (giữ nguyên như cũ) ---
                         st.markdown("##### **Chi tiết & Thảo luận**")
                         
-                        # ... (Toàn bộ phần code hiển thị chi tiết, nút xóa, metric, mô tả, thảo luận... được giữ nguyên như trước) ...
                         task_cols = st.columns([3, 1])
                         with task_cols[1]:
                             if st.button("🗑️ Xóa Công việc", key=f"delete_task_{task['id']}", type="secondary", use_container_width=True):
