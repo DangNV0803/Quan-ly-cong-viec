@@ -221,6 +221,15 @@ def update_account_status(user_id: str, new_status: str):
         st.error("Yêu cầu tới Supabase Auth THẤT BẠI!")
         st.exception(e)
 
+def update_task_details(task_id: int, updates: dict):
+    """Cập nhật các trường cụ thể cho một công việc."""
+    try:
+        supabase_new.table('tasks').update(updates).eq('id', task_id).execute()
+        st.cache_data.clear()
+        st.toast("Cập nhật công việc thành công!", icon="✅")
+    except Exception as e:
+        st.error(f"Lỗi khi cập nhật công việc: {e}")
+
 def update_task_assignee(task_id: int, new_assignee_id: str):
     """Updates the assignee for a specific task."""
     try:
@@ -496,36 +505,71 @@ else:
         """, unsafe_allow_html=True)
         st.text("") # Thêm một khoảng trống nhỏ
 
+        group_by = st.radio(
+            "Nhóm công việc theo:",
+            ('Dự án', 'Nhân viên'),
+            horizontal=True,
+            key="grouping_tasks"
+        )
+
         if not all_tasks:
             st.info("Chưa có công việc nào được giao trong hệ thống.")
         else:
-            tasks_by_project = defaultdict(list)
-            for task in all_tasks:
-                project_info = task.get('projects')
-                if project_info:
-                    project_name = project_info.get('project_name', 'Dự án không tên')
-                    project_code = project_info.get('old_project_ref_id')
-                    # Dùng một tuple (bộ) làm key để gom nhóm
-                    project_key = (project_name, project_code)
-                else:
-                    project_key = ('Không thuộc dự án cụ thể', None)
+            # Chuẩn bị dữ liệu để nhóm dựa trên lựa chọn
+            grouped_tasks = defaultdict(list)
+            if group_by == 'Dự án':
+                for task in all_tasks:
+                    project_info = task.get('projects')
+                    if project_info:
+                        project_name = project_info.get('project_name', 'Dự án không tên')
+                        project_code = project_info.get('old_project_ref_id')
+                        key = (project_name, project_code)
+                    else:
+                        key = ('Không thuộc dự án cụ thể', None)
+                    grouped_tasks[key].append(task)
+            else:  # Nhóm theo Nhân viên
+                for task in all_tasks:
+                    assignee_name = task.get('assignee_name', 'Chưa giao cho ai')
+                    # Tạo key bằng tên nhân viên để nhóm
+                    grouped_tasks[assignee_name].append(task)
 
-                tasks_by_project[project_key].append(task)
-                
-            for (project_name, project_code), tasks_in_project in tasks_by_project.items():
-                # Tạo tiêu đề động, có thêm mã dự án nếu tồn tại
-                display_title = f"Dự án: {project_name}"
-                if project_code:
-                    display_title += f" (Mã: {project_code})"
+            # Sắp xếp các nhóm theo tên (alphabetical)
+            sorted_grouped_tasks = sorted(grouped_tasks.items(), key=lambda item: str(item[0]))
+
+            # Vòng lặp hiển thị danh sách đã nhóm
+            for key, tasks_in_group in sorted_grouped_tasks:
+                # Tạo tiêu đề cho mỗi nhóm
+                if group_by == 'Dự án':
+                    project_name, project_code = key
+                    display_title = f"Dự án: {project_name}"
+                    if project_code:
+                        display_title += f" (Mã: {project_code})"
+                else:  # group_by == 'Nhân viên'
+                    display_title = f"Nhân viên: {key}"
 
                 st.subheader(display_title)
-                for task in tasks_in_project:
+                
+                # Sắp xếp công việc trong nhóm theo ngày tạo mới nhất
+                sorted_tasks = sorted(tasks_in_group, key=lambda t: t['created_at'], reverse=True)
+
+                for task in sorted_tasks:
                     comments = fetch_comments(task['id'])
                     has_new_message = False
                     if comments and comments[0]['user_id'] != user.id:
                         has_new_message = True
+               
+                    # Lấy tên dự án một cách an toàn
+                    project_name_display = task.get('projects', {}).get('project_name', 'N/A')
                     
-                    expander_title = f"**{task['task_name']}** | Người thực hiện: *{task.get('assignee_name', 'N/A')}* | Trạng thái: *{task['status']}*"
+                    # Tạo tiêu đề cơ bản
+                    expander_title = f"**{task['task_name']}** | Trạng thái: *{task['status']}*"
+                    
+                    # Bổ sung thông tin tùy theo cách nhóm
+                    if group_by == 'Dự án':
+                        expander_title += f" | Người thực hiện: *{task.get('assignee_name', 'N/A')}*"
+                    else: # Khi nhóm theo Nhân viên
+                        expander_title += f" | Dự án: *{project_name_display}*"
+
                     if has_new_message:
                         expander_title = f"💬 **Mới!** {expander_title}"
 
@@ -536,12 +580,105 @@ else:
                         """,
                         unsafe_allow_html=True
                     )
-
-                    # Đặt expander vào bên trong div đã được tô màu
-
+                    
+                  
+                    # Giao diện giao công việc chi tiết
                     with st.expander(expander_title):
-                        st.markdown("##### **Chi tiết & Điều chỉnh công việc**")
+                        # Sử dụng st.toggle để tạo công tắc bật/tắt chế độ chỉnh sửa
+                        if st.toggle("✏️ Chỉnh sửa công việc", key=f"edit_toggle_{task['id']}"):
+                            
+                            # Form chỉnh sửa chỉ hiện ra khi công tắc được bật
+                            with st.form(key=f"edit_form_{task['id']}", clear_on_submit=True):
+                                st.markdown("##### **📝 Cập nhật thông tin công việc**")
+                                
+                                # --- Chuẩn bị dữ liệu cho các lựa chọn ---
+                                project_options_map = {p['project_name']: p['id'] for p in all_projects_new} if all_projects_new else {}
+                                project_names = list(project_options_map.keys())
+                                
+                                # MỚI: Dữ liệu cho lựa chọn nhân viên
+                                employee_options_map = {e['full_name']: e['id'] for e in active_employees}
+                                employee_names = list(employee_options_map.keys())
+                                
+                                priorities = ['Low', 'Medium', 'High']
+                                
+                                # --- Tìm index mặc định cho các lựa chọn ---
+                                current_project_name = task.get('projects', {}).get('project_name')
+                                try:
+                                    default_proj_index = project_names.index(current_project_name) if current_project_name else 0
+                                except ValueError:
+                                    default_proj_index = 0
+                                
+                                # MỚI: Index mặc định cho nhân viên
+                                current_assignee_name = task.get('assignee_name')
+                                try:
+                                    default_employee_index = employee_names.index(current_assignee_name) if current_assignee_name in employee_names else 0
+                                except ValueError:
+                                    default_employee_index = 0
+
+                                try:
+                                    default_prio_index = priorities.index(task.get('priority')) if task.get('priority') else 1
+                                except ValueError:
+                                    default_prio_index = 1
+                                
+                                local_tz = ZoneInfo("Asia/Ho_Chi_Minh")
+                                try:
+                                    current_due_datetime = datetime.fromisoformat(task['due_date']).astimezone(local_tz)
+                                except (ValueError, TypeError):
+                                    current_due_datetime = datetime.now(local_tz)
+
+                                # --- Bố cục form ---
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    new_project_name = st.selectbox("Dự án", options=project_names, index=default_proj_index, key=f"proj_edit_{task['id']}")
+                                with col2:
+                                    # MỚI: Lựa chọn để thay đổi nhân viên
+                                    new_assignee_name = st.selectbox("Giao cho nhân viên", options=employee_names, index=default_employee_index, key=f"assignee_edit_{task['id']}")
+
+                                col3, col4, col5 = st.columns(3)
+                                with col3:
+                                    new_priority = st.selectbox("Độ ưu tiên", options=priorities, index=default_prio_index, key=f"prio_edit_{task['id']}")
+                                with col4:
+                                    new_due_date = st.date_input("Hạn chót (ngày)", value=current_due_datetime.date(), key=f"date_edit_{task['id']}")
+                                with col5:
+                                    new_due_time = st.time_input("Hạn chót (giờ)", value=current_due_datetime.time(), key=f"time_edit_{task['id']}")
+                                
+                                submitted_edit = st.form_submit_button("💾 Lưu thay đổi", use_container_width=True, type="primary")
+
+                                if submitted_edit:
+                                    updates_dict = {}
+                                    
+                                    # Logic kiểm tra và thêm các thay đổi vào dictionary
+                                    selected_project_id = project_options_map.get(new_project_name)
+                                    if selected_project_id and selected_project_id != task.get('project_id'):
+                                        updates_dict['project_id'] = selected_project_id
+
+                                    # MỚI: Logic cập nhật nhân viên
+                                    selected_employee_id = employee_options_map.get(new_assignee_name)
+                                    if selected_employee_id and selected_employee_id != task.get('assigned_to'):
+                                        updates_dict['assigned_to'] = selected_employee_id
+                                    
+                                    if new_priority != task.get('priority'):
+                                        updates_dict['priority'] = new_priority
+                                    
+                                    naive_deadline = datetime.combine(new_due_date, new_due_time)
+                                    aware_deadline = naive_deadline.replace(tzinfo=local_tz)
+                                    if aware_deadline.isoformat() != task.get('due_date'):
+                                        updates_dict['due_date'] = aware_deadline.isoformat()
+
+                                    # Thực hiện cập nhật nếu có thay đổi
+                                    if updates_dict:
+                                        update_task_details(task['id'], updates_dict)
+                                        st.toast("Cập nhật thành công!", icon="✅")
+                                        st.rerun()
+                                    else:
+                                        st.toast("Không có thay đổi nào để lưu.", icon="🤷‍♂️")
+
+                        st.divider()
+
+                        # --- Phần hiển thị thông tin chi tiết (giữ nguyên như cũ) ---
+                        st.markdown("##### **Chi tiết & Thảo luận**")
                         
+                        # ... (Toàn bộ phần code hiển thị chi tiết, nút xóa, metric, mô tả, thảo luận... được giữ nguyên như trước) ...
                         task_cols = st.columns([3, 1])
                         with task_cols[1]:
                             if st.button("🗑️ Xóa Công việc", key=f"delete_task_{task['id']}", type="secondary", use_container_width=True):
