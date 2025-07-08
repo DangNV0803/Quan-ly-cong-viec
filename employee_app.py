@@ -1,7 +1,7 @@
 import streamlit as st
 from supabase import create_client, Client
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import defaultdict
 from itertools import groupby
 import requests
@@ -50,6 +50,35 @@ def fetch_comments(task_id: int):
     except Exception as e:
         st.error(f"Lỗi khi tải bình luận: {e}")
         return []
+
+@st.cache_data(ttl=60)
+def fetch_read_statuses(_supabase_client: Client, user_id: str):
+    """Fetches all read statuses for the user, returns a dict of task_id -> UTC datetime."""
+    try:
+        response = _supabase_client.table('task_read_status').select('task_id, last_read_at').eq('user_id', user_id).execute()
+        if response.data:
+            # Luôn chuyển đổi sang UTC để so sánh nhất quán
+            return {item['task_id']: datetime.fromisoformat(item['last_read_at']).astimezone(timezone.utc) for item in response.data}
+        return {}
+    except Exception as e:
+        st.error(f"Lỗi khi tải trạng thái đã đọc: {e}")
+        return {}
+
+def mark_task_as_read(_supabase_client: Client, task_id: int, user_id: str):
+    """Upserts the last read time for a user and a task using current UTC time."""
+    try:
+        # THÊM on_conflict='task_id, user_id' để Supabase biết cách xử lý trùng lặp
+        _supabase_client.table('task_read_status').upsert(
+            {
+                'task_id': task_id,
+                'user_id': user_id,
+                'last_read_at': datetime.now(timezone.utc).isoformat()
+            },
+            on_conflict='task_id, user_id'  # Dòng quan trọng được thêm vào
+        ).execute()
+    except Exception as e:
+        # In ra lỗi chi tiết hơn để dễ chẩn đoán nếu vẫn xảy ra
+        print(f"Không thể đánh dấu đã đọc cho task {task_id}: {e}")
 
 def get_deadline_color(due_date_str: str) -> str:
     """
@@ -254,55 +283,89 @@ else:
         st.info("🎉 Bạn không có công việc nào cần làm. Hãy tận hưởng thời gian rảnh!")
     else:
         local_tz = ZoneInfo("Asia/Ho_Chi_Minh")
+        # Tải trạng thái đã đọc (đã được chuyển sang UTC trong hàm)
+        read_statuses = fetch_read_statuses(supabase, user.id)
 
         tasks_by_project = defaultdict(list)
         for task in my_tasks:
             project_info = task.get('projects')
-            if project_info:
-                project_name = project_info.get('project_name', 'Dự án không tên')
-                project_code = project_info.get('old_project_ref_id')
-                project_key = (project_name, project_code)
-            else:
-                project_key = ("Công việc chung", None)
+            project_key = (project_info.get('project_name', 'Dự án không tên'), project_info.get('old_project_ref_id')) if project_info else ("Công việc chung", None)
             tasks_by_project[project_key].append(task)
         
         sorted_projects = sorted(tasks_by_project.items(), key=lambda item: min(t['due_date'] for t in item[1]))
 
         for (project_name, project_code), tasks in sorted_projects:
-            # Tạo tiêu đề động, có thêm mã dự án nếu tồn tại
-            display_title = f"Dự án: {project_name}"
-            if project_code:
-                display_title += f" (Mã: {project_code})"
-
+            display_title = f"Dự án: {project_name}" + (f" (Mã: {project_code})" if project_code else "")
             st.subheader(display_title)
+
             for task in tasks:
                 comments = fetch_comments(task['id'])
+                # ==========================================================
+                # # DÁN ĐOẠN CODE CHẨN ĐOÁN TẠM THỜI 
+                # st.markdown("---")
+                # st.json({
+                #     "TASK ID": task['id'],
+                #     "TASK NAME": task['task_name']
+                # })
                 
+                # last_read_time_utc = read_statuses.get(task['id'], datetime.fromtimestamp(0, tz=timezone.utc))
+
+                # last_event_time_utc = datetime.fromisoformat(task['created_at']).astimezone(timezone.utc)
+                # if comments:
+                #     last_comment_time_utc = datetime.fromisoformat(comments[0]['created_at']).astimezone(timezone.utc)
+                #     if last_comment_time_utc > last_event_time_utc:
+                #         last_event_time_utc = last_comment_time_utc
+
+                # st.code(f"Thời gian sự kiện cuối (UTC): {last_event_time_utc}")
+                # st.code(f"Thời gian đọc cuối (UTC):   {last_read_time_utc}")
+
+                # is_new = last_event_time_utc > last_read_time_utc
+                # st.info(f"So sánh (Sự kiện > Đọc cuối): {is_new}")
+                # # KẾT THÚC ĐOẠN CODE CHẨN ĐOÁN
+                # # ==========================================================
+                
+                # --- LOGIC THÔNG BÁO MỚI (ĐÃ SỬA LỖI) ---
+                status_icon = ""
                 has_new_message = False
-                if comments and comments[0]['user_id'] != user.id:
+
+                # Mặc định là thời điểm xa xưa nhất (epoch), ở múi giờ UTC.
+                last_read_time_utc = read_statuses.get(task['id'], datetime.fromtimestamp(0, tz=timezone.utc))
+
+                # Xác định thời điểm sự kiện mới nhất (tạo task hoặc bình luận) và chuyển sang UTC
+                last_event_time_utc = datetime.fromisoformat(task['created_at']).astimezone(timezone.utc)
+                if comments:
+                    last_comment_time_utc = datetime.fromisoformat(comments[0]['created_at']).astimezone(timezone.utc)
+                    if last_comment_time_utc > last_event_time_utc:
+                        last_event_time_utc = last_comment_time_utc
+
+                # So sánh và quyết định trạng thái
+                if comments and comments[0]['user_id'] == user.id:
+                    status_icon = "✅ Đã trả lời"
+                elif last_event_time_utc > last_read_time_utc:
+                    status_icon = "💬 Mới!"
                     has_new_message = True
-                
+                elif comments: # Chỉ hiển thị "Đã xem" nếu có bình luận
+                    status_icon = "✔️ Đã xem"
+
                 try:
                     formatted_due_date = datetime.fromisoformat(task['due_date']).astimezone(local_tz).strftime('%d/%m/%Y, %H:%M')
                 except (ValueError, TypeError):
                     formatted_due_date = task.get('due_date', 'N/A')
 
-                expander_title = f"**{task['task_name']}** (Hạn: *{formatted_due_date}* | Trạng thái: *{task['status']}*)"
-                if has_new_message:
-                    expander_title = f"💬 **Mới!** {expander_title}"
-
+                expander_title = f"{status_icon} **{task['task_name']}** (Hạn: *{formatted_due_date}* | Trạng thái: *{task['status']}*)"
                 deadline_color = get_deadline_color(task.get('due_date'))
 
-                # Tạo một div có màu nền tương ứng
-                st.markdown(
-                    f"""
-                    <div style="background-color: {deadline_color}; border-radius: 7px; padding: 10px; margin-bottom: 10px;">
-                    """,
-                    unsafe_allow_html=True
-                )
-
-                # Đặt expander vào bên trong div đã được tô màu
+                st.markdown(f'<div style="background-color: {deadline_color}; border-radius: 7px; padding: 10px; margin-bottom: 10px;">', unsafe_allow_html=True)
                 with st.expander(expander_title):
+                    # LOGIC MỚI: Chỉ đánh dấu đã đọc khi người dùng bấm nút
+                    if has_new_message:
+                        if st.button("✔️ Đánh dấu đã đọc", key=f"read_emp_{task['id']}", help="Bấm vào đây để xác nhận bạn đã xem tin nhắn mới nhất."):
+                            mark_task_as_read(supabase, task['id'], user.id)
+                            fetch_read_statuses.clear()
+                            st.rerun()
+                        st.divider()
+
+                    # --- Toàn bộ code hiển thị chi tiết, thảo luận... của bạn vẫn giữ nguyên ở đây ---
                     st.markdown("#### Chi tiết công việc")
                     col1, col2 = st.columns(2)
                     with col1:
@@ -366,6 +429,4 @@ else:
                         if submitted_comment and (comment_content or uploaded_file):
                             add_comment(task['id'], user.id, comment_content, uploaded_file)
                             st.rerun()
-                
-                # Đóng thẻ div
                 st.markdown("</div>", unsafe_allow_html=True)

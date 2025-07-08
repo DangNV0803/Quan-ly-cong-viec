@@ -1,7 +1,7 @@
 import streamlit as st
 from supabase import create_client, Client
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import defaultdict
 import requests
 from zoneinfo import ZoneInfo
@@ -151,6 +151,35 @@ def sanitize_filename(filename: str) -> str:
     # Thay thế một hoặc nhiều khoảng trắng/gạch nối bằng một gạch nối duy nhất
     value = re.sub(r'[-\s]+', '-', value)
     return value
+
+@st.cache_data(ttl=60)
+def fetch_read_statuses(_supabase_client: Client, user_id: str):
+    """Fetches all read statuses for the user, returns a dict of task_id -> UTC datetime."""
+    try:
+        response = _supabase_client.table('task_read_status').select('task_id, last_read_at').eq('user_id', user_id).execute()
+        if response.data:
+            # Luôn chuyển đổi sang UTC để so sánh nhất quán
+            return {item['task_id']: datetime.fromisoformat(item['last_read_at']).astimezone(timezone.utc) for item in response.data}
+        return {}
+    except Exception as e:
+        st.error(f"Lỗi khi tải trạng thái đã đọc: {e}")
+        return {}
+
+def mark_task_as_read(_supabase_client: Client, task_id: int, user_id: str):
+    """Upserts the last read time for a user and a task using current UTC time."""
+    try:
+        # THÊM on_conflict='task_id, user_id' để Supabase biết cách xử lý trùng lặp
+        _supabase_client.table('task_read_status').upsert(
+            {
+                'task_id': task_id,
+                'user_id': user_id,
+                'last_read_at': datetime.now(timezone.utc).isoformat()
+            },
+            on_conflict='task_id, user_id'  # Dòng quan trọng được thêm vào
+        ).execute()
+    except Exception as e:
+        # In ra lỗi chi tiết hơn để dễ chẩn đoán nếu vẫn xảy ra
+        print(f"Không thể đánh dấu đã đọc cho task {task_id}: {e}")
 
 # HÀM CHẨN ĐOÁN DÀNH RIÊNG CHO MANAGER_APP.PY
 def add_comment(task_id: int, user_id: str, content: str, uploaded_file=None):
@@ -515,125 +544,114 @@ else:
         if not all_tasks:
             st.info("Chưa có công việc nào được giao trong hệ thống.")
         else:
-            # Chuẩn bị dữ liệu để nhóm dựa trên lựa chọn
+            local_tz = ZoneInfo("Asia/Ho_Chi_Minh")
+            # Tải trạng thái đã đọc cho người quản lý (đã được chuyển sang UTC trong hàm)
+            read_statuses = fetch_read_statuses(supabase_new, user.id) 
+            
             grouped_tasks = defaultdict(list)
             if group_by == 'Dự án':
                 for task in all_tasks:
                     project_info = task.get('projects')
-                    if project_info:
-                        project_name = project_info.get('project_name', 'Dự án không tên')
-                        project_code = project_info.get('old_project_ref_id')
-                        key = (project_name, project_code)
-                    else:
-                        key = ('Không thuộc dự án cụ thể', None)
+                    key = (project_info.get('project_name', 'Dự án không tên'), project_info.get('old_project_ref_id')) if project_info else ('Không thuộc dự án cụ thể', None)
                     grouped_tasks[key].append(task)
-            else:  # Nhóm theo Nhân viên
+            else:
                 for task in all_tasks:
-                    assignee_name = task.get('assignee_name', 'Chưa giao cho ai')
-                    # Tạo key bằng tên nhân viên để nhóm
-                    grouped_tasks[assignee_name].append(task)
+                    grouped_tasks[task.get('assignee_name', 'Chưa giao cho ai')].append(task)
 
-            # Sắp xếp các nhóm theo tên (alphabetical)
             sorted_grouped_tasks = sorted(grouped_tasks.items(), key=lambda item: str(item[0]))
 
-            # Vòng lặp hiển thị danh sách đã nhóm
             for key, tasks_in_group in sorted_grouped_tasks:
-                # Tạo tiêu đề cho mỗi nhóm
                 if group_by == 'Dự án':
                     project_name, project_code = key
-                    display_title = f"Dự án: {project_name}"
-                    if project_code:
-                        display_title += f" (Mã: {project_code})"
-                else:  # group_by == 'Nhân viên'
+                    display_title = f"Dự án: {project_name}" + (f" (Mã: {project_code})" if project_code else "")
+                else:
                     display_title = f"Nhân viên: {key}"
-
                 st.subheader(display_title)
                 
-                # Sắp xếp công việc trong nhóm theo ngày tạo mới nhất
                 sorted_tasks = sorted(tasks_in_group, key=lambda t: t['created_at'], reverse=True)
 
                 for task in sorted_tasks:
                     comments = fetch_comments(task['id'])
-                    has_new_message = False
-                    if comments and comments[0]['user_id'] != user.id:
-                        has_new_message = True
-               
-                    # Lấy tên dự án một cách an toàn
-                    project_name_display = task.get('projects', {}).get('project_name', 'N/A')
                     
-                    # Tạo tiêu đề cơ bản
+                    # --- LOGIC THÔNG BÁO MỚI (ĐÃ SỬA LỖI) ---
+                    status_icon = ""
+                    has_new_message = False
+
+                    # Mặc định là thời điểm xa xưa nhất (epoch), ở múi giờ UTC.
+                    last_read_time_utc = read_statuses.get(task['id'], datetime.fromtimestamp(0, tz=timezone.utc))
+
+                    # Xác định thời điểm sự kiện mới nhất (tạo task hoặc bình luận) và chuyển sang UTC
+                    last_event_time_utc = datetime.fromisoformat(task['created_at']).astimezone(timezone.utc)
+                    if comments:
+                        last_comment_time_utc = datetime.fromisoformat(comments[0]['created_at']).astimezone(timezone.utc)
+                        if last_comment_time_utc > last_event_time_utc:
+                            last_event_time_utc = last_comment_time_utc
+
+                    # So sánh và quyết định trạng thái
+                    if comments and comments[0]['user_id'] == user.id:
+                        status_icon = "✅ Đã trả lời"
+                    elif last_event_time_utc > last_read_time_utc:
+                        status_icon = "💬 Mới!"
+                        has_new_message = True
+                    elif comments: # Chỉ hiển thị "Đã xem" nếu có bình luận
+                        status_icon = "✔️ Đã xem"
+
+                    project_name_display = task.get('projects', {}).get('project_name', 'N/A')
                     expander_title = f"**{task['task_name']}** | Trạng thái: *{task['status']}*"
                     
-                    # Bổ sung thông tin tùy theo cách nhóm
                     if group_by == 'Dự án':
                         expander_title += f" | Người thực hiện: *{task.get('assignee_name', 'N/A')}*"
-                    else: # Khi nhóm theo Nhân viên
+                    else:
                         expander_title += f" | Dự án: *{project_name_display}*"
 
-                    if has_new_message:
-                        expander_title = f"💬 **Mới!** {expander_title}"
+                    if status_icon:
+                        expander_title = f"{status_icon} {expander_title}"
 
                     deadline_color = get_deadline_color(task.get('due_date'))
-                    st.markdown(
-                        f"""
-                        <div style="background-color: {deadline_color}; border-radius: 7px; padding: 10px; margin-bottom: 10px;">
-                        """,
-                        unsafe_allow_html=True
-                    )
+                    st.markdown(f'<div style="background-color: {deadline_color}; border-radius: 7px; padding: 10px; margin-bottom: 10px;">', unsafe_allow_html=True)
                     
-                  
-                    # Giao diện giao công việc chi tiết
                     with st.expander(expander_title):
-                        # Sử dụng st.toggle để tạo công tắc bật/tắt chế độ chỉnh sửa
+                        # LOGIC MỚI: Chỉ đánh dấu đã đọc khi người dùng bấm nút
+                        if has_new_message:
+                            if st.button("✔️ Đánh dấu đã đọc", key=f"read_mgr_{task['id']}", help="Bấm vào đây để xác nhận bạn đã xem tin nhắn mới nhất."):
+                                mark_task_as_read(supabase_new, task['id'], user.id)
+                                fetch_read_statuses.clear()
+                                st.rerun()
+                            st.divider()
+
+                        # --- Toàn bộ code hiển thị chi tiết, chỉnh sửa, thảo luận... của bạn vẫn giữ nguyên ở đây ---
                         if st.toggle("✏️ Chỉnh sửa công việc", key=f"edit_toggle_{task['id']}"):
-                            
-                            # Form chỉnh sửa chỉ hiện ra khi công tắc được bật
                             with st.form(key=f"edit_form_{task['id']}", clear_on_submit=True):
                                 st.markdown("##### **📝 Cập nhật thông tin công việc**")
-                                
-                                # --- MỚI: Thêm ô nhập liệu cho Tên công việc ---
                                 new_task_name = st.text_input("Tên công việc", value=task.get('task_name', ''))
-                                
-                                # --- Chuẩn bị dữ liệu cho các lựa chọn (giữ nguyên) ---
                                 project_options_map = {p['project_name']: p['id'] for p in all_projects_new} if all_projects_new else {}
                                 project_names = list(project_options_map.keys())
-                                
                                 employee_options_map = {e['full_name']: e['id'] for e in active_employees}
                                 employee_names = list(employee_options_map.keys())
-                                
                                 priorities = ['Low', 'Medium', 'High']
-                                
-                                # --- Tìm index mặc định cho các lựa chọn (giữ nguyên) ---
                                 current_project_name = task.get('projects', {}).get('project_name')
                                 try:
                                     default_proj_index = project_names.index(current_project_name) if current_project_name else 0
                                 except ValueError:
                                     default_proj_index = 0
-                                
                                 current_assignee_name = task.get('assignee_name')
                                 try:
                                     default_employee_index = employee_names.index(current_assignee_name) if current_assignee_name in employee_names else 0
                                 except ValueError:
                                     default_employee_index = 0
-
                                 try:
                                     default_prio_index = priorities.index(task.get('priority')) if task.get('priority') else 1
                                 except ValueError:
                                     default_prio_index = 1
-                                
-                                local_tz = ZoneInfo("Asia/Ho_Chi_Minh")
                                 try:
                                     current_due_datetime = datetime.fromisoformat(task['due_date']).astimezone(local_tz)
                                 except (ValueError, TypeError):
                                     current_due_datetime = datetime.now(local_tz)
-
-                                # --- Bố cục form (giữ nguyên) ---
                                 col1, col2 = st.columns(2)
                                 with col1:
                                     new_project_name = st.selectbox("Dự án", options=project_names, index=default_proj_index, key=f"proj_edit_{task['id']}")
                                 with col2:
                                     new_assignee_name = st.selectbox("Giao cho nhân viên", options=employee_names, index=default_employee_index, key=f"assignee_edit_{task['id']}")
-
                                 col3, col4, col5 = st.columns(3)
                                 with col3:
                                     new_priority = st.selectbox("Độ ưu tiên", options=priorities, index=default_prio_index, key=f"prio_edit_{task['id']}")
@@ -641,34 +659,23 @@ else:
                                     new_due_date = st.date_input("Hạn chót (ngày)", value=current_due_datetime.date(), key=f"date_edit_{task['id']}")
                                 with col5:
                                     new_due_time = st.time_input("Hạn chót (giờ)", value=current_due_datetime.time(), key=f"time_edit_{task['id']}")
-                                
                                 submitted_edit = st.form_submit_button("💾 Lưu thay đổi", use_container_width=True, type="primary")
-
                                 if submitted_edit:
                                     updates_dict = {}
-                                    
-                                    # --- MỚI: Logic cập nhật Tên công việc ---
                                     if new_task_name and new_task_name != task.get('task_name'):
                                         updates_dict['task_name'] = new_task_name
-
-                                    # --- Logic cập nhật khác (giữ nguyên) ---
                                     selected_project_id = project_options_map.get(new_project_name)
                                     if selected_project_id and selected_project_id != task.get('project_id'):
                                         updates_dict['project_id'] = selected_project_id
-
                                     selected_employee_id = employee_options_map.get(new_assignee_name)
                                     if selected_employee_id and selected_employee_id != task.get('assigned_to'):
                                         updates_dict['assigned_to'] = selected_employee_id
-                                    
                                     if new_priority != task.get('priority'):
                                         updates_dict['priority'] = new_priority
-                                    
                                     naive_deadline = datetime.combine(new_due_date, new_due_time)
                                     aware_deadline = naive_deadline.replace(tzinfo=local_tz)
                                     if aware_deadline.isoformat() != task.get('due_date'):
                                         updates_dict['due_date'] = aware_deadline.isoformat()
-
-                                    # Thực hiện cập nhật nếu có thay đổi
                                     if updates_dict:
                                         update_task_details(task['id'], updates_dict)
                                         st.toast("Cập nhật thành công!", icon="✅")
@@ -677,15 +684,11 @@ else:
                                         st.toast("Không có thay đổi nào để lưu.", icon="🤷‍♂️")
 
                         st.divider()
-
-                        # --- Phần hiển thị thông tin chi tiết (giữ nguyên như cũ) ---
                         st.markdown("##### **Chi tiết & Thảo luận**")
-                        
                         task_cols = st.columns([3, 1])
                         with task_cols[1]:
                             if st.button("🗑️ Xóa Công việc", key=f"delete_task_{task['id']}", type="secondary", use_container_width=True):
                                 st.session_state[f"confirm_delete_task_{task['id']}"] = True
-                        
                         if st.session_state.get(f"confirm_delete_task_{task['id']}"):
                             with st.warning(f"Bạn có chắc muốn xóa vĩnh viễn công việc **{task['task_name']}**?"):
                                 c1, c2 = st.columns(2)
@@ -696,10 +699,8 @@ else:
                                 if c2.button("❌ Hủy", key=f"cancel_del_btn_{task['id']}"):
                                     del st.session_state[f"confirm_delete_task_{task['id']}"]
                                     st.rerun()
-
                         meta_cols = st.columns(3)
                         meta_cols[0].metric("Độ ưu tiên", task['priority'])
-                        local_tz = ZoneInfo("Asia/Ho_Chi_Minh")
                         try:
                             formatted_due_date = datetime.fromisoformat(task['due_date']).astimezone(local_tz).strftime('%d/%m/%Y, %H:%M')
                         except (ValueError, TypeError):
@@ -710,7 +711,6 @@ else:
                             st.markdown("**Mô tả:**")
                             st.info(task['description'])
                         st.divider()
-
                         st.markdown("##### **Thảo luận**")
                         with st.container(height=250):
                             if not comments:
@@ -735,17 +735,13 @@ else:
                                             )
                                         except requests.exceptions.RequestException as e:
                                             st.error(f"Không thể tải tệp: {e}")
-
                         with st.form(key=f"comment_form_manager_{task['id']}", clear_on_submit=True):
                             comment_content = st.text_area("Thêm bình luận:", key=f"comment_text_manager_{task['id']}", label_visibility="collapsed", placeholder="Nhập bình luận của bạn...")
                             uploaded_file = st.file_uploader("Đính kèm file (Word, RAR, ZIP <2MB)", type=['doc', 'docx', 'rar', 'zip'], accept_multiple_files=False, key=f"file_manager_{task['id']}")
-                            
                             submitted_comment = st.form_submit_button("Gửi bình luận")
                             if submitted_comment and (comment_content or uploaded_file):
                                 add_comment(task['id'], manager_profile['id'], comment_content, uploaded_file)
                                 st.rerun()
-                    
-                    # Đóng thẻ div
                     st.markdown("</div>", unsafe_allow_html=True)
 
 
