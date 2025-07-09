@@ -7,6 +7,7 @@ import requests
 from zoneinfo import ZoneInfo
 import re
 import unicodedata
+import time
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -398,6 +399,10 @@ if 'manager_profile' not in st.session_state:
 
 # --- Login UI ---
 if st.session_state.user is None:
+    if 'logout_message' in st.session_state:
+        st.warning(st.session_state.logout_message)
+        del st.session_state.logout_message # Xóa thông báo để không hiển thị lại
+
     st.title("👨‍💼 Đăng nhập Trang Quản lý")
     with st.form("login_form"):
         email = st.text_input("Email")
@@ -428,6 +433,32 @@ if st.session_state.user is None:
 
 # --- Main App UI (after login) ---
 else:
+    # ===================================================================
+    # BẮT ĐẦU: LOGIC KIỂM TRA KHÔNG HOẠT ĐỘNG
+    # ===================================================================
+    TIMEOUT_IN_SECONDS = 1800 # 30 phút
+
+    is_expired = False
+    if 'last_activity_time' in st.session_state:
+        idle_duration = time.time() - st.session_state.last_activity_time
+        if idle_duration > TIMEOUT_IN_SECONDS:
+            is_expired = True
+
+    if is_expired:
+        # Nếu ĐÃ HẾT HẠN: Hiển thị cảnh báo và không làm gì thêm.
+        # Việc không cập nhật last_activity_time sẽ giữ cho trạng thái is_expired=True ở các lần chạy lại sau.
+        st.error(
+            "**Phiên làm việc đã hết hạn!** "
+            "Để bảo mật, mọi thao tác đã được vô hiệu hóa. "
+            "Vui lòng sao chép lại nội dung bạn đang soạn (nếu có), sau đó **Đăng xuất** và đăng nhập lại."
+        )
+    else:
+        # Nếu CHƯA HẾT HẠN: Cập nhật lại thời gian hoạt động.
+        # Chỉ cập nhật trong trường hợp này.
+        st.session_state.last_activity_time = time.time()
+    # ===================================================================
+    # KẾT THÚC: LOGIC KIỂM TRA KHÔNG HOẠT ĐỘNG
+    # ===================================================================
     manager_profile = st.session_state.manager_profile
     user = st.session_state.user
     
@@ -476,22 +507,22 @@ else:
                 col1_task, col2_task = st.columns(2)
                 with col1_task:
                     project_options_map = {f"{p['customer_name']} - {p['project_type']} (Mã: {p['quotation_no']})": p for p in du_an_dang_thuc_hien}
-                    selected_project_display = st.selectbox("1. Chọn Dự án/Vụ việc:", options=project_options_map.keys())
-                    task_name = st.text_input("2. Tên công việc:", placeholder="VD: Soạn thảo hợp đồng mua bán...")
+                    selected_project_display = st.selectbox("1. Chọn Dự án/Vụ việc:", options=project_options_map.keys(),disabled=is_expired)
+                    task_name = st.text_input("2. Tên công việc:", placeholder="VD: Soạn thảo hợp đồng mua bán...",disabled=is_expired)
                     employee_options = {f"{e['full_name']} ({e['email']})": e['id'] for e in active_employees}
-                    selected_employee_display = st.selectbox("3. Giao cho nhân viên:", options=employee_options.keys())
+                    selected_employee_display = st.selectbox("3. Giao cho nhân viên:", options=employee_options.keys(), disabled=is_expired)
                 with col2_task:
-                    priority = st.selectbox("4. Độ ưu tiên:", options=['Medium', 'High', 'Low'], index=0)
+                    priority = st.selectbox("4. Độ ưu tiên:", options=['Medium', 'High', 'Low'], index=0, disabled=is_expired)
                     # Khai báo múi giờ Việt Nam
                     local_tz = ZoneInfo("Asia/Ho_Chi_Minh")
                     # Lấy giờ hiện tại theo múi giờ Việt Nam
                     current_time_vn = datetime.now(local_tz)
-                    deadline_date = st.date_input("5. Hạn chót (ngày):", min_value=current_time_vn.date())
+                    deadline_date = st.date_input("5. Hạn chót (ngày):", min_value=current_time_vn.date(), disabled=is_expired)
                     # Thêm `value` để mặc định là giờ hiện tại
-                    deadline_hour = st.time_input("6. Hạn chót (giờ):", value=current_time_vn.time())
-                    description = st.text_area("7. Mô tả chi tiết:", height=150)
-                submitted = st.form_submit_button("🚀 Giao việc")
-                if submitted:
+                    deadline_hour = st.time_input("6. Hạn chót (giờ):", value=current_time_vn.time(), disabled=is_expired)
+                    description = st.text_area("7. Mô tả chi tiết:", height=150, disabled=is_expired)
+                submitted = st.form_submit_button("🚀 Giao việc", disabled= is_expired)
+                if submitted and not is_expired:
                     due_date = datetime.combine(deadline_date, deadline_hour)
                     if not task_name:
                         st.error("Vui lòng nhập tên công việc!")
@@ -613,14 +644,14 @@ else:
                     with st.expander(expander_title):
                         # LOGIC MỚI: Chỉ đánh dấu đã đọc khi người dùng bấm nút
                         if has_new_message:
-                            if st.button("✔️ Đánh dấu đã đọc", key=f"read_mgr_{task['id']}", help="Bấm vào đây để xác nhận bạn đã xem tin nhắn mới nhất."):
+                            if st.button("✔️ Đánh dấu đã đọc", key=f"read_mgr_{task['id']}", help="Bấm vào đây để xác nhận bạn đã xem tin nhắn mới nhất.", disabled=is_expired) and not is_expired:
                                 mark_task_as_read(supabase_new, task['id'], user.id)
                                 fetch_read_statuses.clear()
                                 st.rerun()
                             st.divider()
 
                         # --- Toàn bộ code hiển thị chi tiết, chỉnh sửa, thảo luận... của bạn vẫn giữ nguyên ở đây ---
-                        if st.toggle("✏️ Chỉnh sửa công việc", key=f"edit_toggle_{task['id']}"):
+                        if st.toggle("✏️ Chỉnh sửa công việc", key=f"edit_toggle_{task['id']}",disabled= is_expired):
                             with st.form(key=f"edit_form_{task['id']}", clear_on_submit=True):
                                 st.markdown("##### **📝 Cập nhật thông tin công việc**")
                                 new_task_name = st.text_input("Tên công việc", value=task.get('task_name', ''))
@@ -659,8 +690,8 @@ else:
                                     new_due_date = st.date_input("Hạn chót (ngày)", value=current_due_datetime.date(), key=f"date_edit_{task['id']}")
                                 with col5:
                                     new_due_time = st.time_input("Hạn chót (giờ)", value=current_due_datetime.time(), key=f"time_edit_{task['id']}")
-                                submitted_edit = st.form_submit_button("💾 Lưu thay đổi", use_container_width=True, type="primary")
-                                if submitted_edit:
+                                submitted_edit = st.form_submit_button("💾 Lưu thay đổi", use_container_width=True, type="primary",disabled=is_expired)
+                                if submitted_edit and not is_expired:
                                     updates_dict = {}
                                     if new_task_name and new_task_name != task.get('task_name'):
                                         updates_dict['task_name'] = new_task_name
@@ -687,12 +718,12 @@ else:
                         st.markdown("##### **Chi tiết & Thảo luận**")
                         task_cols = st.columns([3, 1])
                         with task_cols[1]:
-                            if st.button("🗑️ Xóa Công việc", key=f"delete_task_{task['id']}", type="secondary", use_container_width=True):
+                            if st.button("🗑️ Xóa Công việc", key=f"delete_task_{task['id']}", type="secondary", use_container_width=True,disabled=is_expired) and not is_expired:
                                 st.session_state[f"confirm_delete_task_{task['id']}"] = True
                         if st.session_state.get(f"confirm_delete_task_{task['id']}"):
                             with st.warning(f"Bạn có chắc muốn xóa vĩnh viễn công việc **{task['task_name']}**?"):
                                 c1, c2 = st.columns(2)
-                                if c1.button("✅ Xóa", key=f"confirm_del_btn_{task['id']}", type="primary"):
+                                if c1.button("✅ Xóa", key=f"confirm_del_btn_{task['id']}", type="primary") and not is_expired:
                                     delete_task(task['id'])
                                     del st.session_state[f"confirm_delete_task_{task['id']}"]
                                     st.rerun()
@@ -700,13 +731,21 @@ else:
                                     del st.session_state[f"confirm_delete_task_{task['id']}"]
                                     st.rerun()
                         meta_cols = st.columns(3)
-                        meta_cols[0].metric("Độ ưu tiên", task['priority'])
+                        # Cột 1: Độ ưu tiên
+                        meta_cols[0].markdown("**Độ ưu tiên**")
+                        meta_cols[0].write(task.get('priority', 'N/A'))
+
+                        # Cột 2: Hạn chót
+                        meta_cols[1].markdown("**Hạn chót**")
                         try:
                             formatted_due_date = datetime.fromisoformat(task['due_date']).astimezone(local_tz).strftime('%d/%m/%Y, %H:%M')
                         except (ValueError, TypeError):
                             formatted_due_date = task.get('due_date', 'N/A')
-                        meta_cols[1].metric("Hạn chót", formatted_due_date)
-                        meta_cols[2].metric("Người giao", task.get('creator_name', 'N/A'))
+                        meta_cols[1].write(formatted_due_date)
+
+                        # Cột 3: Người giao
+                        meta_cols[2].markdown("**Người giao**")
+                        meta_cols[2].write(task.get('creator_name', 'N/A'))
                         if task['description']:
                             st.markdown("**Mô tả:**")
                             st.info(task['description'])
@@ -738,10 +777,20 @@ else:
                                         except requests.exceptions.RequestException as e:
                                             st.error(f"Không thể tải tệp: {e}")
                         with st.form(key=f"comment_form_manager_{task['id']}", clear_on_submit=True):
-                            comment_content = st.text_area("Thêm bình luận:", key=f"comment_text_manager_{task['id']}", label_visibility="collapsed", placeholder="Nhập bình luận của bạn...")
-                            uploaded_file = st.file_uploader("Đính kèm file (Word, RAR, ZIP <2MB)", type=['doc', 'docx', 'rar', 'zip'], accept_multiple_files=False, key=f"file_manager_{task['id']}")
-                            submitted_comment = st.form_submit_button("Gửi bình luận")
-                            if submitted_comment and (comment_content or uploaded_file):
+                            comment_content = st.text_area("Thêm bình luận:", key=f"comment_text_manager_{task['id']}", label_visibility="collapsed", placeholder="Nhập bình luận của bạn...", disabled=is_expired)
+                            uploaded_file = st.file_uploader("Đính kèm file (Word, RAR, ZIP <2MB)", type=['doc', 'docx', 'rar', 'zip'], accept_multiple_files=False, key=f"file_manager_{task['id']}", disabled=is_expired)
+                            submitted_comment = st.form_submit_button("Gửi bình luận",disabled=is_expired)
+                            # =========================================================
+                            # Bắt lại nội dung nếu gửi khi hết hạn
+                            if submitted_comment and is_expired and (comment_content or uploaded_file):
+                                st.warning("⚠️ Nội dung của bạn CHƯA ĐƯỢC GỬI do phiên làm việc đã hết hạn. Dưới đây là bản sao để bạn tiện lưu lại:")
+                                if comment_content:
+                                    # Hiển thị lại nội dung text trong một khung code dễ sao chép
+                                    st.code(comment_content, language=None)
+                                if uploaded_file:
+                                    st.info(f"Bạn cũng đã đính kèm tệp: **{uploaded_file.name}**. Vui lòng tải lại tệp này sau khi đăng nhập.")
+                            # =========================================================
+                            if submitted_comment and (comment_content or uploaded_file) and not is_expired:
                                 add_comment(task['id'], manager_profile['id'], comment_content, uploaded_file)
                                 st.rerun()
                     st.markdown("</div>", unsafe_allow_html=True)
@@ -754,14 +803,14 @@ else:
             with st.form("new_employee_form", clear_on_submit=True):
                 col1, col2 = st.columns(2)
                 with col1:
-                    full_name = st.text_input("Họ và tên:", placeholder="Nguyễn Văn A")
-                    email = st.text_input("Email:", placeholder="email@congty.com")
+                    full_name = st.text_input("Họ và tên:", placeholder="Nguyễn Văn A", disabled=is_expired)
+                    email = st.text_input("Email:", placeholder="email@congty.com", disabled=is_expired)
                 with col2:
-                    password = st.text_input("Mật khẩu tạm thời:", type="password")
-                    role = st.selectbox("Vai trò:", options=['employee', 'manager'], format_func=lambda x: "Nhân viên" if x == 'employee' else "Quản lý")
+                    password = st.text_input("Mật khẩu tạm thời:", type="password", disabled=is_expired)
+                    role = st.selectbox("Vai trò:", options=['employee', 'manager'], format_func=lambda x: "Nhân viên" if x == 'employee' else "Quản lý", disabled=is_expired)
                 
-                add_employee_submitted = st.form_submit_button("Thêm nhân viên", use_container_width=True)
-                if add_employee_submitted:
+                add_employee_submitted = st.form_submit_button("Thêm nhân viên", use_container_width=True, disabled=is_expired)
+                if add_employee_submitted and not is_expired:
                     if not full_name or not email or not password:
                         st.error("Vui lòng điền đầy đủ thông tin: Họ tên, Email và Mật khẩu.")
                     else:
@@ -840,17 +889,17 @@ else:
                 with col4:
                     action_cols = st.columns([1, 1, 1])
                     if status == 'active':
-                        if action_cols[0].button("Vô hiệu hóa", key=f"deact_{u['id']}", use_container_width=True):
+                        if action_cols[0].button("Vô hiệu hóa", key=f"deact_{u['id']}", use_container_width=True, disabled=is_expired) and not is_expired:
                             update_account_status(u['id'], 'inactive')
                     else:
-                        if action_cols[0].button("Kích hoạt", key=f"act_{u['id']}", use_container_width=True, type="primary"):
+                        if action_cols[0].button("Kích hoạt", key=f"act_{u['id']}", use_container_width=True, type="primary", disabled=is_expired) and not is_expired:
                             update_account_status(u['id'], 'active')
                     
-                    if action_cols[1].button("🔑 Đặt MK", key=f"reset_pw_{u['id']}", use_container_width=True):
+                    if action_cols[1].button("🔑 Đặt MK", key=f"reset_pw_{u['id']}", use_container_width=True, disabled=is_expired) and not is_expired:
                         st.session_state.user_to_reset_pw = u
                         st.rerun()
 
-                    if action_cols[2].button("🗑️ Xóa", key=f"del_{u['id']}", use_container_width=True):
+                    if action_cols[2].button("🗑️ Xóa", key=f"del_{u['id']}", use_container_width=True, disabled=is_expired) and not is_expired:
                         st.session_state.user_to_delete = {'id': u['id'], 'name': u.get('full_name', 'N/A')}
                         st.rerun()
                 st.divider()
@@ -871,7 +920,7 @@ else:
                     st.warning(f"**Xác nhận xóa dự án**", icon="⚠️")
                     st.write(f"Bạn có chắc chắn muốn xóa vĩnh viễn dự án **{project_name}**?")
                     col1, col2 = st.columns(2)
-                    if col1.button("✅ Xác nhận Xóa Dự án", use_container_width=True, type="primary"):
+                    if col1.button("✅ Xác nhận Xóa Dự án", use_container_width=True, type="primary") and not is_expired:
                         delete_project(st.session_state.project_to_delete['id'])
                         del st.session_state.project_to_delete
                         st.rerun()
@@ -891,7 +940,7 @@ else:
                 c1_proj, c2_proj, c3_proj = st.columns([3, 4, 1])
                 c1_proj.write(row['Tên Dự án'])
                 c2_proj.caption(row['Mô tả'])
-                if c3_proj.button("🗑️ Xóa", key=f"delete_project_{row['id']}", type="secondary"):
+                if c3_proj.button("🗑️ Xóa", key=f"delete_project_{row['id']}", type="secondary",disabled=is_expired):
                     st.session_state.project_to_delete = {'id': row['id'], 'name': row['Tên Dự án']}
                     st.rerun()
 
@@ -916,11 +965,11 @@ else:
         st.subheader("Thay đổi mật khẩu")
 
         with st.form("change_password_form", clear_on_submit=True):
-            new_password = st.text_input("Mật khẩu mới", type="password")
-            confirm_password = st.text_input("Xác nhận mật khẩu mới", type="password")
-            submitted = st.form_submit_button("Lưu thay đổi")
+            new_password = st.text_input("Mật khẩu mới", type="password", disabled=is_expired)
+            confirm_password = st.text_input("Xác nhận mật khẩu mới", type="password", disabled=is_expired)
+            submitted = st.form_submit_button("Lưu thay đổi",disabled=is_expired)
 
-            if submitted:
+            if submitted and not is_expired:
                 if not new_password or not confirm_password:
                     st.warning("Vui lòng nhập đầy đủ mật khẩu mới và xác nhận.")
                 elif new_password != confirm_password:

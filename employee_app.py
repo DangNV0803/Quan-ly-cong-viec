@@ -8,6 +8,7 @@ import requests
 from zoneinfo import ZoneInfo
 import re
 import unicodedata
+import time
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -195,6 +196,11 @@ if 'user' not in st.session_state:
 
 # --- Login UI ---
 if st.session_state.user is None:
+    
+    if 'logout_message' in st.session_state:
+        st.warning(st.session_state.logout_message)
+        del st.session_state.logout_message # Xóa thông báo để không hiển thị lại
+
     st.title("🧑‍💻 Đăng nhập hệ thống")
     with st.form("login_form"):
         email = st.text_input("Email")
@@ -210,6 +216,32 @@ if st.session_state.user is None:
 
 # --- Main App UI (after login) ---
 else:
+    # ===================================================================
+    # BẮT ĐẦU: LOGIC KIỂM TRA KHÔNG HOẠT ĐỘNG
+    # ===================================================================
+    TIMEOUT_IN_SECONDS = 1800 # 30 phút
+
+    is_expired = False
+    if 'last_activity_time' in st.session_state:
+        idle_duration = time.time() - st.session_state.last_activity_time
+        if idle_duration > TIMEOUT_IN_SECONDS:
+            is_expired = True
+
+    if is_expired:
+        # Nếu ĐÃ HẾT HẠN: Hiển thị cảnh báo và không làm gì thêm.
+        # Việc không cập nhật last_activity_time sẽ giữ cho trạng thái is_expired=True ở các lần chạy lại sau.
+        st.error(
+            "**Phiên làm việc đã hết hạn!** "
+            "Để bảo mật, mọi thao tác đã được vô hiệu hóa. "
+            "Vui lòng sao chép lại nội dung bạn đang soạn (nếu có), sau đó **Đăng xuất** và đăng nhập lại."
+        )
+    else:
+        # Nếu CHƯA HẾT HẠN: Cập nhật lại thời gian hoạt động.
+        # Chỉ cập nhật trong trường hợp này.
+        st.session_state.last_activity_time = time.time()
+    # ===================================================================
+    # KẾT THÚC: LOGIC KIỂM TRA KHÔNG HOẠT ĐỘNG
+    # ===================================================================
     user = st.session_state.user
     
     profile_res = supabase.table('profiles').select('account_status, role').eq('id', user.id).single().execute()
@@ -243,9 +275,9 @@ else:
         with st.form("change_password_form_emp", clear_on_submit=True):
             new_password = st.text_input("Mật khẩu mới", type="password")
             confirm_password = st.text_input("Xác nhận mật khẩu mới", type="password")
-            submitted_pw_change = st.form_submit_button("Lưu mật khẩu mới")
+            submitted_pw_change = st.form_submit_button("Lưu mật khẩu mới", disabled=is_expired)
 
-            if submitted_pw_change:
+            if submitted_pw_change and not is_expired:
                 if not new_password or not confirm_password:
                     st.warning("Vui lòng nhập đầy đủ mật khẩu mới và xác nhận.")
                 elif new_password != confirm_password:
@@ -359,7 +391,7 @@ else:
                 with st.expander(expander_title):
                     # LOGIC MỚI: Chỉ đánh dấu đã đọc khi người dùng bấm nút
                     if has_new_message:
-                        if st.button("✔️ Đánh dấu đã đọc", key=f"read_emp_{task['id']}", help="Bấm vào đây để xác nhận bạn đã xem tin nhắn mới nhất."):
+                        if st.button("✔️ Đánh dấu đã đọc", key=f"read_emp_{task['id']}", help="Bấm vào đây để xác nhận bạn đã xem tin nhắn mới nhất.", disabled=is_expired) and not is_expired:
                             mark_task_as_read(supabase, task['id'], user.id)
                             fetch_read_statuses.clear()
                             st.rerun()
@@ -379,9 +411,10 @@ else:
                             "Cập nhật trạng thái:",
                             options=status_options,
                             index=current_status_index,
-                            key=f"status_{task['id']}"
+                            key=f"status_{task['id']}",
+                            disabled=is_expired
                         )
-                        if new_status != task['status']:
+                        if new_status != task['status'] and not is_expired:
                             update_task_status(task['id'], new_status)
                             st.rerun()
 
@@ -424,11 +457,21 @@ else:
                                         st.error(f"Không thể tải tệp: {e}")
                     
                     with st.form(key=f"comment_form_{task['id']}", clear_on_submit=True):
-                        comment_content = st.text_area("Thêm bình luận của bạn:", key=f"comment_text_{task['id']}", label_visibility="collapsed", placeholder="Nhập trao đổi về công việc...")
-                        uploaded_file = st.file_uploader("Đính kèm file (Word, RAR, ZIP <2MB)", type=['doc', 'docx', 'rar', 'zip'], accept_multiple_files=False, key=f"file_{task['id']}")
+                        comment_content = st.text_area("Thêm bình luận của bạn:", key=f"comment_text_{task['id']}", label_visibility="collapsed", placeholder="Nhập trao đổi về công việc...",disabled=is_expired)
+                        uploaded_file = st.file_uploader("Đính kèm file (Word, RAR, ZIP <2MB)", type=['doc', 'docx', 'rar', 'zip'], accept_multiple_files=False, key=f"file_{task['id']}",disabled=is_expired)
                         
-                        submitted_comment = st.form_submit_button("Gửi bình luận")
-                        if submitted_comment and (comment_content or uploaded_file):
+                        submitted_comment = st.form_submit_button("Gửi bình luận",disabled=is_expired)
+                        # =========================================================
+                        # Bắt lại nội dung nếu gửi khi hết hạn
+                        if submitted_comment and is_expired and (comment_content or uploaded_file):
+                            st.warning("⚠️ Nội dung của bạn CHƯA ĐƯỢC GỬI do phiên làm việc đã hết hạn. Dưới đây là bản sao để bạn tiện lưu lại:")
+                            if comment_content:
+                                # Hiển thị lại nội dung text trong một khung code dễ sao chép
+                                st.code(comment_content, language=None)
+                            if uploaded_file:
+                                st.info(f"Bạn cũng đã đính kèm tệp: **{uploaded_file.name}**. Vui lòng tải lại tệp này sau khi đăng nhập.")
+                        # =========================================================
+                        if submitted_comment and (comment_content or uploaded_file) and not is_expired:
                             add_comment(task['id'], user.id, comment_content, uploaded_file)
                             st.rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
