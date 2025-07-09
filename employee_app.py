@@ -418,6 +418,8 @@ else:
                                             file_name=file_name,
                                             key=f"download_emp_{task['id']}_{comment['id']}"
                                         )
+                                        # Thêm dòng này để hiển thị tên file bên dưới
+                                        st.caption(f"{file_name}")
                                     except requests.exceptions.RequestException as e:
                                         st.error(f"Không thể tải tệp: {e}")
                     
