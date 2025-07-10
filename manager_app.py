@@ -413,11 +413,11 @@ if st.session_state.user is None:
                 user_response = supabase_auth.auth.sign_in_with_password({"email": email, "password": password})
                 user = user_response.user
                 
-                # Sửa lỗi: Đảm bảo select() có lấy 'id'
                 profile_res = supabase_new.table('profiles').select('id, full_name, role, account_status').eq('id', user.id).single().execute()
                 profile_data = profile_res.data
                 
-                if profile_data and profile_data.get('role') == 'manager':
+                # <<< THAY ĐỔI: Cho phép cả 'manager' và 'admin' đăng nhập
+                if profile_data and profile_data.get('role') in ['manager', 'admin']:
                     if profile_data.get('account_status') == 'inactive':
                         st.error("Tài khoản của bạn đã bị vô hiệu hóa. Vui lòng liên hệ quản trị viên.")
                         supabase_auth.auth.sign_out()
@@ -426,7 +426,7 @@ if st.session_state.user is None:
                         st.session_state.manager_profile = profile_data
                         st.rerun()
                 else:
-                    st.error("Truy cập bị từ chối. Bạn không có quyền quản lý.")
+                    st.error("Truy cập bị từ chối. Bạn không có quyền quản lý hoặc quản trị.")
                     supabase_auth.auth.sign_out()
             except Exception as e:
                 st.error("Email hoặc mật khẩu không đúng. Vui lòng thử lại.")
@@ -445,16 +445,12 @@ else:
             is_expired = True
 
     if is_expired:
-        # Nếu ĐÃ HẾT HẠN: Hiển thị cảnh báo và không làm gì thêm.
-        # Việc không cập nhật last_activity_time sẽ giữ cho trạng thái is_expired=True ở các lần chạy lại sau.
         st.error(
             "**Phiên làm việc đã hết hạn!** "
             "Để bảo mật, mọi thao tác đã được vô hiệu hóa. "
             "Vui lòng sao chép lại nội dung bạn đang soạn (nếu có), sau đó **Đăng xuất** và đăng nhập lại."
         )
     else:
-        # Nếu CHƯA HẾT HẠN: Cập nhật lại thời gian hoạt động.
-        # Chỉ cập nhật trong trường hợp này.
         st.session_state.last_activity_time = time.time()
     # ===================================================================
     # KẾT THÚC: LOGIC KIỂM TRA KHÔNG HOẠT ĐỘNG
@@ -462,7 +458,11 @@ else:
     manager_profile = st.session_state.manager_profile
     user = st.session_state.user
     
+    # <<< THAY ĐỔI: Lấy vai trò của người dùng đang đăng nhập
+    current_user_role = manager_profile.get('role')
+
     st.sidebar.title(f"Xin chào, {manager_profile.get('full_name', user.email)}!")
+    st.sidebar.caption(f"Vai trò: {current_user_role.capitalize()}") # Hiển thị vai trò
     if st.sidebar.button("Đăng xuất", use_container_width=True):
         supabase_auth.auth.sign_out()
         st.session_state.user = None
@@ -470,10 +470,8 @@ else:
         st.rerun()
     
     if st.sidebar.button("🔄 Làm mới dữ liệu", use_container_width=True):
-        # Xóa cache để buộc tải lại dữ liệu mới từ database
         st.cache_data.clear()
         st.toast("Đã làm mới dữ liệu!", icon="🔄")
-        # Chạy lại ứng dụng để hiển thị dữ liệu mới
         st.rerun()
 
     st.title("👨‍💼 Hệ thống Quản lý Công việc")
@@ -513,12 +511,9 @@ else:
                     selected_employee_display = st.selectbox("3. Giao cho nhân viên:", options=employee_options.keys(), disabled=is_expired)
                 with col2_task:
                     priority = st.selectbox("4. Độ ưu tiên:", options=['Medium', 'High', 'Low'], index=0, disabled=is_expired)
-                    # Khai báo múi giờ Việt Nam
                     local_tz = ZoneInfo("Asia/Ho_Chi_Minh")
-                    # Lấy giờ hiện tại theo múi giờ Việt Nam
                     current_time_vn = datetime.now(local_tz)
                     deadline_date = st.date_input("5. Hạn chót (ngày):", min_value=current_time_vn.date(), disabled=is_expired)
-                    # Thêm `value` để mặc định là giờ hiện tại
                     deadline_hour = st.time_input("6. Hạn chót (giờ):", value=current_time_vn.time(), disabled=is_expired)
                     description = st.text_area("7. Mô tả chi tiết:", height=150, disabled=is_expired)
                 submitted = st.form_submit_button("🚀 Giao việc", disabled= is_expired)
@@ -563,7 +558,7 @@ else:
         <span class="color-box" style="background-color: #fffde7;"></span> 7-15 ngày
         <span class="color-box" style="background-color: #e8f5e9;"></span> > 15 ngày
         """, unsafe_allow_html=True)
-        st.text("") # Thêm một khoảng trống nhỏ
+        st.text("") 
 
         group_by = st.radio(
             "Nhóm công việc theo:",
@@ -576,7 +571,6 @@ else:
             st.info("Chưa có công việc nào được giao trong hệ thống.")
         else:
             local_tz = ZoneInfo("Asia/Ho_Chi_Minh")
-            # Tải trạng thái đã đọc cho người quản lý (đã được chuyển sang UTC trong hàm)
             read_statuses = fetch_read_statuses(supabase_new, user.id) 
             
             grouped_tasks = defaultdict(list)
@@ -604,27 +598,23 @@ else:
                 for task in sorted_tasks:
                     comments = fetch_comments(task['id'])
                     
-                    # --- LOGIC THÔNG BÁO MỚI (ĐÃ SỬA LỖI) ---
                     status_icon = ""
                     has_new_message = False
 
-                    # Mặc định là thời điểm xa xưa nhất (epoch), ở múi giờ UTC.
                     last_read_time_utc = read_statuses.get(task['id'], datetime.fromtimestamp(0, tz=timezone.utc))
 
-                    # Xác định thời điểm sự kiện mới nhất (tạo task hoặc bình luận) và chuyển sang UTC
                     last_event_time_utc = datetime.fromisoformat(task['created_at']).astimezone(timezone.utc)
                     if comments:
                         last_comment_time_utc = datetime.fromisoformat(comments[0]['created_at']).astimezone(timezone.utc)
                         if last_comment_time_utc > last_event_time_utc:
                             last_event_time_utc = last_comment_time_utc
 
-                    # So sánh và quyết định trạng thái
                     if comments and comments[0]['user_id'] == user.id:
                         status_icon = "✅ Đã trả lời"
                     elif last_event_time_utc > last_read_time_utc:
                         status_icon = "💬 Mới!"
                         has_new_message = True
-                    elif comments: # Chỉ hiển thị "Đã xem" nếu có bình luận
+                    elif comments:
                         status_icon = "✔️ Đã xem"
 
                     project_name_display = task.get('projects', {}).get('project_name', 'N/A')
@@ -633,7 +623,7 @@ else:
                     if group_by == 'Dự án':
                         expander_title += f" | Người thực hiện: *{task.get('assignee_name', 'N/A')}*"
                     else:
-                        expander_title += f" | Dự án: *{project_name_display}*"
+                        expander_title += f" | Dự án: *_{project_name_display}_*"
 
                     if status_icon:
                         expander_title = f"{status_icon} {expander_title}"
@@ -642,7 +632,6 @@ else:
                     st.markdown(f'<div style="background-color: {deadline_color}; border-radius: 7px; padding: 10px; margin-bottom: 10px;">', unsafe_allow_html=True)
                     
                     with st.expander(expander_title):
-                        # LOGIC MỚI: Chỉ đánh dấu đã đọc khi người dùng bấm nút
                         if has_new_message:
                             if st.button("✔️ Đánh dấu đã đọc", key=f"read_mgr_{task['id']}", help="Bấm vào đây để xác nhận bạn đã xem tin nhắn mới nhất.", disabled=is_expired) and not is_expired:
                                 mark_task_as_read(supabase_new, task['id'], user.id)
@@ -650,7 +639,6 @@ else:
                                 st.rerun()
                             st.divider()
 
-                        # --- Toàn bộ code hiển thị chi tiết, chỉnh sửa, thảo luận... của bạn vẫn giữ nguyên ở đây ---
                         if st.toggle("✏️ Chỉnh sửa công việc", key=f"edit_toggle_{task['id']}",disabled= is_expired):
                             with st.form(key=f"edit_form_{task['id']}", clear_on_submit=True):
                                 st.markdown("##### **📝 Cập nhật thông tin công việc**")
@@ -731,19 +719,14 @@ else:
                                     del st.session_state[f"confirm_delete_task_{task['id']}"]
                                     st.rerun()
                         meta_cols = st.columns(3)
-                        # Cột 1: Độ ưu tiên
                         meta_cols[0].markdown("**Độ ưu tiên**")
                         meta_cols[0].write(task.get('priority', 'N/A'))
-
-                        # Cột 2: Hạn chót
                         meta_cols[1].markdown("**Hạn chót**")
                         try:
                             formatted_due_date = datetime.fromisoformat(task['due_date']).astimezone(local_tz).strftime('%d/%m/%Y, %H:%M')
                         except (ValueError, TypeError):
                             formatted_due_date = task.get('due_date', 'N/A')
                         meta_cols[1].write(formatted_due_date)
-
-                        # Cột 3: Người giao
                         meta_cols[2].markdown("**Người giao**")
                         meta_cols[2].write(task.get('creator_name', 'N/A'))
                         if task['description']:
@@ -772,7 +755,6 @@ else:
                                                 file_name=file_name,
                                                 key=f"download_manager_{task['id']}_{comment['id']}"
                                             )
-                                            # Thêm dòng này để hiển thị tên file bên dưới
                                             st.caption(f"{file_name}")
                                         except requests.exceptions.RequestException as e:
                                             st.error(f"Không thể tải tệp: {e}")
@@ -780,16 +762,12 @@ else:
                             comment_content = st.text_area("Thêm bình luận:", key=f"comment_text_manager_{task['id']}", label_visibility="collapsed", placeholder="Nhập bình luận của bạn...", disabled=is_expired)
                             uploaded_file = st.file_uploader("Đính kèm file (Word, RAR, ZIP <2MB)", type=['doc', 'docx', 'rar', 'zip'], accept_multiple_files=False, key=f"file_manager_{task['id']}", disabled=is_expired)
                             submitted_comment = st.form_submit_button("Gửi bình luận",disabled=is_expired)
-                            # =========================================================
-                            # Bắt lại nội dung nếu gửi khi hết hạn
                             if submitted_comment and is_expired and (comment_content or uploaded_file):
                                 st.warning("⚠️ Nội dung của bạn CHƯA ĐƯỢC GỬI do phiên làm việc đã hết hạn. Dưới đây là bản sao để bạn tiện lưu lại:")
                                 if comment_content:
-                                    # Hiển thị lại nội dung text trong một khung code dễ sao chép
                                     st.code(comment_content, language=None)
                                 if uploaded_file:
                                     st.info(f"Bạn cũng đã đính kèm tệp: **{uploaded_file.name}**. Vui lòng tải lại tệp này sau khi đăng nhập.")
-                            # =========================================================
                             if submitted_comment and (comment_content or uploaded_file) and not is_expired:
                                 add_comment(task['id'], manager_profile['id'], comment_content, uploaded_file)
                                 st.rerun()
@@ -798,36 +776,46 @@ else:
 
     with tab_employees:
         st.header("👥 Quản lý Nhân viên")
+        
+        # <<< THAY ĐỔI: Chỉ admin mới có quyền thêm nhân viên
+        if current_user_role == 'admin':
+            with st.expander("➕ Thêm nhân viên mới"):
+                with st.form("new_employee_form", clear_on_submit=True):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        full_name = st.text_input("Họ và tên:", placeholder="Nguyễn Văn A", disabled=is_expired)
+                        email = st.text_input("Email:", placeholder="email@congty.com", disabled=is_expired)
+                    with col2:
+                        password = st.text_input("Mật khẩu tạm thời:", type="password", disabled=is_expired)
+                        # <<< THAY ĐỔI: Thêm vai trò 'admin' và format tên cho dễ đọc
+                        role = st.selectbox(
+                            "Vai trò:", 
+                            options=['employee', 'manager', 'admin'], 
+                            format_func=lambda x: "Nhân viên" if x == 'employee' else ("Quản lý" if x == 'manager' else "Quản trị viên"),
+                            disabled=is_expired
+                        )
+                    
+                    add_employee_submitted = st.form_submit_button("Thêm nhân viên", use_container_width=True, disabled=is_expired)
+                    if add_employee_submitted and not is_expired:
+                        if not full_name or not email or not password:
+                            st.error("Vui lòng điền đầy đủ thông tin: Họ tên, Email và Mật khẩu.")
+                        else:
+                            try:
+                                new_user_res = supabase_new.auth.admin.create_user({"email": email, "password": password, "user_metadata": {'full_name': full_name}, "email_confirm": True})
+                                new_user = new_user_res.user
+                                if new_user:
+                                    st.success(f"Tạo tài khoản cho '{full_name}' thành công!")
+                                    # Cập nhật cả role và full_name vào bảng profiles
+                                    profile_update_res = supabase_new.table('profiles').update({'role': role, 'full_name': full_name, 'account_status': 'active'}).eq('id', new_user.id).execute()
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                else:
+                                    st.error("Có lỗi xảy ra từ Supabase khi tạo người dùng.")
+                            except Exception as e:
+                                st.error(f"Lỗi hệ thống: {'Email đã tồn tại' if 'User already exists' in str(e) else e}")
+            st.markdown("---")
 
-        with st.expander("➕ Thêm nhân viên mới"):
-            with st.form("new_employee_form", clear_on_submit=True):
-                col1, col2 = st.columns(2)
-                with col1:
-                    full_name = st.text_input("Họ và tên:", placeholder="Nguyễn Văn A", disabled=is_expired)
-                    email = st.text_input("Email:", placeholder="email@congty.com", disabled=is_expired)
-                with col2:
-                    password = st.text_input("Mật khẩu tạm thời:", type="password", disabled=is_expired)
-                    role = st.selectbox("Vai trò:", options=['employee', 'manager'], format_func=lambda x: "Nhân viên" if x == 'employee' else "Quản lý", disabled=is_expired)
-                
-                add_employee_submitted = st.form_submit_button("Thêm nhân viên", use_container_width=True, disabled=is_expired)
-                if add_employee_submitted and not is_expired:
-                    if not full_name or not email or not password:
-                        st.error("Vui lòng điền đầy đủ thông tin: Họ tên, Email và Mật khẩu.")
-                    else:
-                        try:
-                            new_user_res = supabase_new.auth.admin.create_user({"email": email, "password": password, "user_metadata": {'full_name': full_name}, "email_confirm": True})
-                            new_user = new_user_res.user
-                            if new_user:
-                                st.success(f"Tạo tài khoản cho '{full_name}' thành công!")
-                                supabase_new.table('profiles').update({'role': role, 'full_name': full_name}).eq('id', new_user.id).execute()
-                                st.cache_data.clear()
-                                st.rerun()
-                            else:
-                                st.error("Có lỗi xảy ra từ Supabase khi tạo người dùng.")
-                        except Exception as e:
-                            st.error(f"Lỗi hệ thống: {'Email đã tồn tại' if 'User already exists' in str(e) else e}")
 
-        st.markdown("---")
         st.subheader("Danh sách nhân viên hiện tại")
 
         if 'user_to_reset_pw' in st.session_state and st.session_state.user_to_reset_pw:
@@ -870,16 +858,16 @@ else:
             c4.markdown("**Hành động**")
             st.divider()
 
-            current_manager_id = user.id
-
             for u in all_profiles_data:
-                if u['id'] == current_manager_id:
+                # Không cho phép admin tự thao tác với chính tài khoản của mình
+                if u['id'] == user.id:
                     continue
 
                 col1, col2, col3, col4 = st.columns([2, 3, 2, 3])
                 with col1:
                     st.write(u.get('full_name', 'N/A'))
-                    role_display = "Quản lý" if u.get('role') == 'manager' else "Nhân viên"
+                    # <<< THAY ĐỔI: Hiển thị đúng tên vai trò
+                    role_display = "Quản trị viên" if u.get('role') == 'admin' else ("Quản lý" if u.get('role') == 'manager' else "Nhân viên")
                     st.caption(f"Vai trò: {role_display}")
                 with col2:
                     st.write(u.get('email', 'N/A'))
@@ -887,21 +875,26 @@ else:
                     status = u.get('account_status', 'N/A')
                     st.write(f"🟢 Hoạt động" if status == 'active' else f"⚪ Vô hiệu hóa")
                 with col4:
-                    action_cols = st.columns([1, 1, 1])
-                    if status == 'active':
-                        if action_cols[0].button("Vô hiệu hóa", key=f"deact_{u['id']}", use_container_width=True, disabled=is_expired) and not is_expired:
-                            update_account_status(u['id'], 'inactive')
-                    else:
-                        if action_cols[0].button("Kích hoạt", key=f"act_{u['id']}", use_container_width=True, type="primary", disabled=is_expired) and not is_expired:
-                            update_account_status(u['id'], 'active')
-                    
-                    if action_cols[1].button("🔑 Đặt MK", key=f"reset_pw_{u['id']}", use_container_width=True, disabled=is_expired) and not is_expired:
-                        st.session_state.user_to_reset_pw = u
-                        st.rerun()
+                    # <<< THAY ĐỔI: Chỉ admin mới thấy các nút hành động
+                    if current_user_role == 'admin':
+                        action_cols = st.columns([1, 1, 1])
+                        # Nút Kích hoạt / Vô hiệu hóa
+                        if status == 'active':
+                            if action_cols[0].button("Vô hiệu hóa", key=f"deact_{u['id']}", use_container_width=True, disabled=is_expired) and not is_expired:
+                                update_account_status(u['id'], 'inactive')
+                        else:
+                            if action_cols[0].button("Kích hoạt", key=f"act_{u['id']}", use_container_width=True, type="primary", disabled=is_expired) and not is_expired:
+                                update_account_status(u['id'], 'active')
+                        
+                        # Nút Đặt mật khẩu
+                        if action_cols[1].button("🔑 Đặt MK", key=f"reset_pw_{u['id']}", use_container_width=True, disabled=is_expired) and not is_expired:
+                            st.session_state.user_to_reset_pw = u
+                            st.rerun()
 
-                    if action_cols[2].button("🗑️ Xóa", key=f"del_{u['id']}", use_container_width=True, disabled=is_expired) and not is_expired:
-                        st.session_state.user_to_delete = {'id': u['id'], 'name': u.get('full_name', 'N/A')}
-                        st.rerun()
+                        # Nút Xóa
+                        if action_cols[2].button("🗑️ Xóa", key=f"del_{u['id']}", use_container_width=True, disabled=is_expired) and not is_expired:
+                            st.session_state.user_to_delete = {'id': u['id'], 'name': u.get('full_name', 'N/A')}
+                            st.rerun()
                 st.divider()
         else:
             st.info("Chưa có nhân viên nào trong hệ thống mới.")
@@ -940,9 +933,11 @@ else:
                 c1_proj, c2_proj, c3_proj = st.columns([3, 4, 1])
                 c1_proj.write(row['Tên Dự án'])
                 c2_proj.caption(row['Mô tả'])
-                if c3_proj.button("🗑️ Xóa", key=f"delete_project_{row['id']}", type="secondary",disabled=is_expired):
-                    st.session_state.project_to_delete = {'id': row['id'], 'name': row['Tên Dự án']}
-                    st.rerun()
+                # <<< THAY ĐỔI: Chỉ admin mới có quyền xóa dự án
+                if current_user_role == 'admin':
+                    if c3_proj.button("🗑️ Xóa", key=f"delete_project_{row['id']}", type="secondary",disabled=is_expired):
+                        st.session_state.project_to_delete = {'id': row['id'], 'name': row['Tên Dự án']}
+                        st.rerun()
 
         st.markdown("---")
         with st.expander("📋 Danh sách Dự án từ Hệ thống Cũ (để tham chiếu)", expanded=False):
