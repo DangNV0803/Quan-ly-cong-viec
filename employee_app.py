@@ -330,7 +330,11 @@ else:
             display_title = f"Dự án: {project_name}" + (f" (Mã: {project_code})" if project_code else "")
             st.subheader(display_title)
 
+            sorted_tasks_in_project = sorted(tasks, key=lambda t: (t.get('due_date') is None, t.get('due_date')))
+            task_counter = 0
+
             for task in tasks:
+                task_counter += 1
                 comments = fetch_comments(task['id'])
                 # ==========================================================
                 # # DÁN ĐOẠN CODE CHẨN ĐOÁN TẠM THỜI 
@@ -360,35 +364,61 @@ else:
                 status_icon = ""
                 has_new_message = False
 
-                # Mặc định là thời điểm xa xưa nhất (epoch), ở múi giờ UTC.
                 last_read_time_utc = read_statuses.get(task['id'], datetime.fromtimestamp(0, tz=timezone.utc))
 
-                # Xác định thời điểm sự kiện mới nhất (tạo task hoặc bình luận) và chuyển sang UTC
                 last_event_time_utc = datetime.fromisoformat(task['created_at']).astimezone(timezone.utc)
                 if comments:
                     last_comment_time_utc = datetime.fromisoformat(comments[0]['created_at']).astimezone(timezone.utc)
                     if last_comment_time_utc > last_event_time_utc:
                         last_event_time_utc = last_comment_time_utc
 
-                # So sánh và quyết định trạng thái
                 if comments and comments[0]['user_id'] == user.id:
                     status_icon = "✅ Đã trả lời"
                 elif last_event_time_utc > last_read_time_utc:
                     status_icon = "💬 Mới!"
                     has_new_message = True
-                elif comments: # Chỉ hiển thị "Đã xem" nếu có bình luận
+                elif comments:
                     status_icon = "✔️ Đã xem"
 
+                # --- Logic mới: Kiểm tra nhiệm vụ có bị quá hạn không ---
+                is_overdue = False
+                if task.get('due_date'):
+                    try:
+                        due_date = datetime.fromisoformat(task['due_date']).astimezone(local_tz)
+                        if due_date < datetime.now(local_tz):
+                            is_overdue = True
+                    except (ValueError, TypeError):
+                        is_overdue = False
+
+                # --- Chuẩn bị các dòng thông tin để hiển thị ---
+                # Dòng 1: Số thứ tự và Tên công việc
+                line_1 = f"**Task {task_counter}. {task['task_name']}**"
+
+                # Dòng 2: Trạng thái và Deadline
                 try:
                     formatted_due_date = datetime.fromisoformat(task['due_date']).astimezone(local_tz).strftime('%d/%m/%Y, %H:%M')
                 except (ValueError, TypeError):
-                    formatted_due_date = task.get('due_date', 'N/A')
+                    formatted_due_date = 'N/A'
 
-                expander_title = f"{status_icon} **{task['task_name']}** (Hạn: *{formatted_due_date}* | Trạng thái: *{task['status']}*)"
+                line_2_parts = [
+                    status_icon,
+                    f"Trạng thái: *{task['status']}*",
+                    f"Deadline: *{formatted_due_date}*"
+                ]
+                line_2 = " | ".join(filter(None, line_2_parts))
+
+                # --- Hiển thị ra giao diện ---
                 deadline_color = get_deadline_color(task.get('due_date'))
-
                 st.markdown(f'<div style="background-color: {deadline_color}; border-radius: 7px; padding: 10px; margin-bottom: 10px;">', unsafe_allow_html=True)
-                with st.expander(expander_title):
+
+                st.markdown(f"<span style='color: blue;'>{line_1}</span>", unsafe_allow_html=True)
+                st.markdown(line_2)
+
+                # Hiển thị cảnh báo nếu quá hạn VÀ chưa được hoàn thành
+                if is_overdue and task.get('status') != 'Done':
+                    st.markdown("<span style='color: red;'><b>Lưu ý: Nhiệm vụ đã quá hạn hoặc bạn chưa chuyển trạng thái Done khi đã làm xong</b></span>", unsafe_allow_html=True)
+
+                with st.expander("Chi tiết & Thảo luận"):
                     # LOGIC MỚI: Chỉ đánh dấu đã đọc khi người dùng bấm nút
                     if has_new_message:
                         if st.button("✔️ Đánh dấu đã đọc", key=f"read_emp_{task['id']}", help="Bấm vào đây để xác nhận bạn đã xem tin nhắn mới nhất.", disabled=is_expired) and not is_expired:

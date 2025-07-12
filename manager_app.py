@@ -592,17 +592,20 @@ else:
                 else:
                     display_title = f"Nhân viên: {key}"
                 st.subheader(display_title)
+
+                task_counter = 0
                 
-                sorted_tasks = sorted(tasks_in_group, key=lambda t: t['created_at'], reverse=True)
+                sorted_tasks = sorted(tasks_in_group, key=lambda t: (t.get('due_date') is None, t.get('due_date')))
 
                 for task in sorted_tasks:
+                    task_counter += 1  # Tăng số thứ tự cho mỗi nhiệm vụ
                     comments = fetch_comments(task['id'])
-                    
+
+                    # --- Logic xác định trạng thái tin nhắn (Mới, Đã xem,...) ---
                     status_icon = ""
                     has_new_message = False
 
                     last_read_time_utc = read_statuses.get(task['id'], datetime.fromtimestamp(0, tz=timezone.utc))
-
                     last_event_time_utc = datetime.fromisoformat(task['created_at']).astimezone(timezone.utc)
                     if comments:
                         last_comment_time_utc = datetime.fromisoformat(comments[0]['created_at']).astimezone(timezone.utc)
@@ -617,21 +620,54 @@ else:
                     elif comments:
                         status_icon = "✔️ Đã xem"
 
+                    # --- Logic mới: Kiểm tra nhiệm vụ có bị quá hạn không ---
+                    is_overdue = False
+                    if task.get('due_date'):
+                        try:
+                            due_date = datetime.fromisoformat(task['due_date']).astimezone(local_tz)
+                            if due_date < datetime.now(local_tz):
+                                is_overdue = True
+                        except (ValueError, TypeError):
+                            is_overdue = False # Bỏ qua nếu định dạng ngày tháng lỗi
+
+                    # --- Chuẩn bị các dòng thông tin để hiển thị ---
                     project_name_display = task.get('projects', {}).get('project_name', 'N/A')
-                    expander_title = f"**{task['task_name']}** | Trạng thái: *{task['status']}*"
-                    
+
+                    # Dòng 1: Số thứ tự và Tên công việc (in đậm)
+                    line_1 = f"**Task {task_counter}. {task['task_name']}**"
+
+                    # Dòng 2: Các thông tin còn lại
+                    try:
+                        formatted_due_date = datetime.fromisoformat(task['due_date']).astimezone(local_tz).strftime('%d/%m/%Y, %H:%M')
+                    except (ValueError, TypeError):
+                        formatted_due_date = 'N/A'
+
+                    line_2_parts = [
+                        status_icon, # Trạng thái tin nhắn (Mới, Đã xem,...)
+                        f"Trạng thái thực hiện: *{task['status']}*"
+                    ]
                     if group_by == 'Dự án':
-                        expander_title += f" | Người thực hiện: *{task.get('assignee_name', 'N/A')}*"
-                    else:
-                        expander_title += f" | Dự án: *_{project_name_display}_*"
+                        line_2_parts.append(f"Người thực hiện: *{task.get('assignee_name', 'N/A')}*")
+                    else: # Nhóm theo nhân viên
+                        line_2_parts.append(f"Dự án: *_{project_name_display}_*")
 
-                    if status_icon:
-                        expander_title = f"{status_icon} {expander_title}"
+                    line_2_parts.append(f"Deadline: *{formatted_due_date}*")
 
+                    line_2 = " | ".join(filter(None, line_2_parts)) # Nối các phần tử của dòng 2, bỏ qua nếu rỗng
+
+                    # --- Hiển thị ra giao diện ---
                     deadline_color = get_deadline_color(task.get('due_date'))
                     st.markdown(f'<div style="background-color: {deadline_color}; border-radius: 7px; padding: 10px; margin-bottom: 10px;">', unsafe_allow_html=True)
-                    
-                    with st.expander(expander_title):
+
+                    # Hiển thị 2 dòng thông tin đã tạo
+                    st.markdown(f"<span style='color: blue;'>{line_1}</span>", unsafe_allow_html=True)
+                    st.markdown(line_2)
+
+                    # Hiển thị cảnh báo nếu quá hạn
+                    if is_overdue and task.get('status') != 'Done':
+                        st.markdown("<span style='color: red;'><b>Cảnh báo: Nhiệm vụ đã quá hạn chót hoặc nhân viên đã làm xong nhưng chưa chuyển trạng thái Done</b></span>", unsafe_allow_html=True)
+                  
+                    with st.expander("Chi tiết & Thảo luận"):
                         if has_new_message:
                             if st.button("✔️ Đánh dấu đã đọc", key=f"read_mgr_{task['id']}", help="Bấm vào đây để xác nhận bạn đã xem tin nhắn mới nhất.", disabled=is_expired) and not is_expired:
                                 mark_task_as_read(supabase_new, task['id'], user.id)
