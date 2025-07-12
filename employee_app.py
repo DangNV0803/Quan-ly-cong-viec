@@ -36,7 +36,7 @@ supabase = init_supabase_client()
 def fetch_my_tasks(user_id: str):
     """Fetches tasks assigned to the current logged-in user, ordered by due date."""
     try:
-        response = supabase.table('tasks').select('*, projects(project_name, id, old_project_ref_id)').eq('assigned_to', user_id).order('due_date', desc=False).execute()
+        response = supabase.table('tasks').select('*, projects(project_name, id, old_project_ref_id), is_completed_by_manager').eq('assigned_to', user_id).order('due_date', desc=False).execute()
         return response.data if response.data else []
     except Exception as e:
         st.error(f"Lỗi khi tải công việc: {e}")
@@ -357,6 +357,14 @@ else:
                 # --- Phần code hiển thị chi tiết mỗi công việc (giữ nguyên như cũ) ---
                 task_counter += 1
                 comments = fetch_comments(task['id'])
+
+                # <<< BẮT ĐẦU: THÊM ĐOẠN CODE MỚI TẠI ĐÂY >>>
+                is_manager_completed = task.get('is_completed_by_manager', False)
+
+                # Biến này sẽ quyết định việc khóa các widget
+                # Kết hợp với is_expired để khóa khi hết phiên làm việc
+                is_task_locked = is_manager_completed or is_expired
+                # <<< KẾT THÚC: THÊM ĐOẠN CODE MỚI TẠI ĐÂY >>>
                 
                 status_icon = ""
                 has_new_message = False
@@ -402,11 +410,15 @@ else:
                 st.markdown(f"<span style='color: blue;'>{line_1}</span>", unsafe_allow_html=True)
                 st.markdown(line_2)
 
-                if is_overdue and task.get('status') != 'Done':
+                if is_overdue and task.get('status') != 'Done' and not is_manager_completed:
                     st.markdown("<span style='color: red;'><b>Lưu ý: Nhiệm vụ đã quá hạn hoặc đã làm xong nhưng bạn chưa chuyển trạng thái Done</b></span>", unsafe_allow_html=True)
 
                 with st.expander("Chi tiết & Thảo luận"):
-                    # ... (Toàn bộ code trong expander giữ nguyên y hệt như cũ) ...
+                    # <<< THÊM ĐOẠN CODE MỚI TẠI ĐÂY >>>
+                    if is_manager_completed:
+                        st.success("✓ Công việc này đã được quản lý xác nhận hoàn thành. Mọi thao tác đã được khóa.")
+                        st.divider()
+                    # <<< KẾT THÚC >>>
                     if has_new_message:
                         if st.button("✔️ Đánh dấu đã đọc", key=f"read_emp_{task['id']}", help="Bấm vào đây để xác nhận bạn đã xem tin nhắn mới nhất.", disabled=is_expired) and not is_expired:
                             mark_task_as_read(supabase, task['id'], user.id)
@@ -428,9 +440,9 @@ else:
                             options=status_options,
                             index=current_status_index,
                             key=f"status_{task['id']}",
-                            disabled=is_expired
+                            disabled=is_task_locked
                         )
-                        if new_status != task['status'] and not is_expired:
+                        if new_status != task['status'] and not is_task_locked:
                             update_task_status(task['id'], new_status)
                             st.rerun()
 
@@ -472,12 +484,12 @@ else:
                                         st.error(f"Không thể tải tệp: {e}")
                     
                     with st.form(key=f"comment_form_{task['id']}", clear_on_submit=True):
-                        comment_content = st.text_area("Thêm bình luận của bạn:", key=f"comment_text_{task['id']}", label_visibility="collapsed", placeholder="Nhập trao đổi về công việc...",disabled=is_expired)
-                        uploaded_file = st.file_uploader("Đính kèm file (Word, RAR, ZIP <2MB)", type=['doc', 'docx', 'rar', 'zip'], accept_multiple_files=False, key=f"file_{task['id']}",disabled=is_expired)
+                        comment_content = st.text_area("Thêm bình luận của bạn:", key=f"comment_text_{task['id']}", label_visibility="collapsed", placeholder="Nhập trao đổi về công việc...",disabled=is_task_locked)
+                        uploaded_file = st.file_uploader("Đính kèm file (Word, RAR, ZIP <2MB)", type=['doc', 'docx', 'rar', 'zip'], accept_multiple_files=False, key=f"file_{task['id']}",disabled=is_task_locked)
                         
-                        submitted_comment = st.form_submit_button("Gửi bình luận",disabled=is_expired)
-                        if submitted_comment and is_expired and (comment_content or uploaded_file):
-                            st.warning("⚠️ Nội dung của bạn CHƯA ĐƯỢC GỬI do phiên làm việc đã hết hạn. Dưới đây là bản sao để bạn tiện lưu lại:")
+                        submitted_comment = st.form_submit_button("Gửi bình luận",disabled=is_task_locked)
+                        if submitted_comment and is_task_locked and (comment_content or uploaded_file):
+                            st.warning("⚠️ Nội dung của bạn CHƯA ĐƯỢC GỬI do phiên làm việc đã hết hạn/ bị khóa. Dưới đây là bản sao để bạn tiện lưu lại:")
                             if comment_content:
                                 st.code(comment_content, language=None)
                             if uploaded_file:

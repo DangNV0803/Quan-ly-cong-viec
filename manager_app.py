@@ -680,18 +680,39 @@ else:
                     st.markdown(f"<span style='color: blue;'>{line_1}</span>", unsafe_allow_html=True)
                     st.markdown(line_2)
 
-                    if is_overdue and task.get('status') != 'Done':
+                    # Lấy trạng thái công việc đã được khóa hay chưa
+                    is_completed = task.get('is_completed_by_manager', False)
+
+                    # Ưu tiên hiển thị thông báo "Đã khóa" nếu có
+                    if is_completed:
+                        st.success("✓ Công việc này đã được bạn xác nhận hoàn thành và đã bị khóa đối với nhân viên.")
+                    # Nếu chưa khóa, mới kiểm tra và hiển thị cảnh báo "Quá hạn"
+                    elif is_overdue and task.get('status') != 'Done':
                         st.markdown("<span style='color: red;'><b>Lưu ý: Nhiệm vụ đã quá hạn hoặc đã làm xong nhưng nhân viên chưa chuyển trạng thái Done</b></span>", unsafe_allow_html=True)
 
                     with st.expander("Chi tiết & Thảo luận"):
-                        # ... (Toàn bộ code trong expander giữ nguyên y hệt như cũ) ...
+                        # Tạo công tắc để quản lý thay đổi trạng thái
+                        new_completed_status = st.toggle(
+                            "**Xác nhận hoàn thành & Khóa công việc**", 
+                            value=is_completed, 
+                            key=f"complete_toggle_{task['id']}",
+                            help="Khi được bật, nhân viên sẽ không thể bình luận, đính kèm file hay thay đổi trạng thái của công việc này nữa.",
+                            disabled=is_expired
+                        )
+                        
+                        # Nếu có sự thay đổi trạng thái từ công tắc
+                        if new_completed_status != is_completed and not is_expired:
+                            update_task_details(task['id'], {'is_completed_by_manager': new_completed_status})
+                            st.rerun() # Tải lại trang để cập nhật giao diện
+                        
                         if has_new_message:
                             if st.button("✔️ Đánh dấu đã đọc", key=f"read_mgr_{task['id']}", help="Bấm vào đây để xác nhận bạn đã xem tin nhắn mới nhất.", disabled=is_expired) and not is_expired:
                                 mark_task_as_read(supabase_new, task['id'], user.id)
                                 fetch_read_statuses.clear()
                                 st.rerun()
                             st.divider()
-
+                        
+                                                
                         if st.toggle("✏️ Chỉnh sửa công việc", key=f"edit_toggle_{task['id']}",disabled= is_expired):
                             with st.form(key=f"edit_form_{task['id']}", clear_on_submit=True):
                                 st.markdown("##### **📝 Cập nhật thông tin công việc**")
