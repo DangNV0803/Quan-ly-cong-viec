@@ -573,18 +573,49 @@ else:
             local_tz = ZoneInfo("Asia/Ho_Chi_Minh")
             read_statuses = fetch_read_statuses(supabase_new, user.id) 
             
+            # --- Bước 1: Nhóm các công việc lại như cũ ---
             grouped_tasks = defaultdict(list)
             if group_by == 'Dự án':
                 for task in all_tasks:
                     project_info = task.get('projects')
                     key = (project_info.get('project_name', 'Dự án không tên'), project_info.get('old_project_ref_id')) if project_info else ('Không thuộc dự án cụ thể', None)
                     grouped_tasks[key].append(task)
-            else:
+            else: # Nhóm theo Nhân viên
                 for task in all_tasks:
                     grouped_tasks[task.get('assignee_name', 'Chưa giao cho ai')].append(task)
 
-            sorted_grouped_tasks = sorted(grouped_tasks.items(), key=lambda item: str(item[0]))
+            # --- Bước 2: Tạo hộp tìm kiếm/chọn lựa ---
+            group_keys = sorted(grouped_tasks.keys(), key=str)
+            
+            if group_by == 'Dự án':
+                # Định dạng lại tên hiển thị cho các dự án
+                options_map = {f"{name} (Mã: {code})" if code else name: key for key, (name, code) in zip(group_keys, group_keys)}
+                label = "🔍 Tìm và nhảy đến Dự án"
+            else: # Nhóm theo Nhân viên
+                # Tên nhân viên là key
+                options_map = {key: key for key in group_keys}
+                label = "🔍 Tìm và nhảy đến Nhân viên"
+                
+            # Thêm lựa chọn "Hiển thị tất cả" vào đầu danh sách
+            options_list = ["--- Hiển thị tất cả ---"] + list(options_map.keys())
+            
+            selected_option = st.selectbox(label, options=options_list)
+            st.divider()
 
+            # --- Bước 3: Lọc dữ liệu dựa trên lựa chọn của người dùng ---
+            if selected_option and selected_option != "--- Hiển thị tất cả ---":
+                selected_key = options_map[selected_option]
+                tasks_to_display = {selected_key: grouped_tasks[selected_key]}
+            else:
+                # Nếu không chọn gì hoặc chọn "Hiển thị tất cả" thì giữ nguyên
+                tasks_to_display = grouped_tasks
+
+            # --- Bước 4: Hiển thị danh sách công việc đã được lọc ---
+            sorted_grouped_tasks = sorted(tasks_to_display.items(), key=lambda item: str(item[0]))
+
+            if not sorted_grouped_tasks:
+                st.info("Không tìm thấy kết quả phù hợp.")
+                
             for key, tasks_in_group in sorted_grouped_tasks:
                 if group_by == 'Dự án':
                     project_name, project_code = key
@@ -592,26 +623,24 @@ else:
                 else:
                     display_title = f"Nhân viên: {key}"
                 st.subheader(display_title)
-
-                task_counter = 0
                 
+                # Sắp xếp theo deadline tăng dần, nhiệm vụ không có deadline sẽ xuống cuối
                 sorted_tasks = sorted(tasks_in_group, key=lambda t: (t.get('due_date') is None, t.get('due_date')))
+                task_counter = 0
 
                 for task in sorted_tasks:
-                    task_counter += 1  # Tăng số thứ tự cho mỗi nhiệm vụ
+                    # --- Phần code hiển thị chi tiết mỗi công việc (giữ nguyên như cũ) ---
+                    task_counter += 1
                     comments = fetch_comments(task['id'])
-
-                    # --- Logic xác định trạng thái tin nhắn (Mới, Đã xem,...) ---
+                    
                     status_icon = ""
                     has_new_message = False
-
                     last_read_time_utc = read_statuses.get(task['id'], datetime.fromtimestamp(0, tz=timezone.utc))
                     last_event_time_utc = datetime.fromisoformat(task['created_at']).astimezone(timezone.utc)
                     if comments:
                         last_comment_time_utc = datetime.fromisoformat(comments[0]['created_at']).astimezone(timezone.utc)
                         if last_comment_time_utc > last_event_time_utc:
                             last_event_time_utc = last_comment_time_utc
-
                     if comments and comments[0]['user_id'] == user.id:
                         status_icon = "✅ Đã trả lời"
                     elif last_event_time_utc > last_read_time_utc:
@@ -620,7 +649,6 @@ else:
                     elif comments:
                         status_icon = "✔️ Đã xem"
 
-                    # --- Logic mới: Kiểm tra nhiệm vụ có bị quá hạn không ---
                     is_overdue = False
                     if task.get('due_date'):
                         try:
@@ -628,46 +656,35 @@ else:
                             if due_date < datetime.now(local_tz):
                                 is_overdue = True
                         except (ValueError, TypeError):
-                            is_overdue = False # Bỏ qua nếu định dạng ngày tháng lỗi
+                            is_overdue = False
 
-                    # --- Chuẩn bị các dòng thông tin để hiển thị ---
-                    project_name_display = task.get('projects', {}).get('project_name', 'N/A')
-
-                    # Dòng 1: Số thứ tự và Tên công việc (in đậm)
                     line_1 = f"**Task {task_counter}. {task['task_name']}**"
-
-                    # Dòng 2: Các thông tin còn lại
                     try:
                         formatted_due_date = datetime.fromisoformat(task['due_date']).astimezone(local_tz).strftime('%d/%m/%Y, %H:%M')
                     except (ValueError, TypeError):
                         formatted_due_date = 'N/A'
-
-                    line_2_parts = [
-                        status_icon, # Trạng thái tin nhắn (Mới, Đã xem,...)
-                        f"Trạng thái thực hiện: *{task['status']}*"
-                    ]
+                    
+                    line_2_parts = [status_icon, f"Trạng thái thực hiện: *{task['status']}*"]
                     if group_by == 'Dự án':
                         line_2_parts.append(f"Người thực hiện: *{task.get('assignee_name', 'N/A')}*")
-                    else: # Nhóm theo nhân viên
+                    else:
+                        project_name_display = task.get('projects', {}).get('project_name', 'N/A')
                         line_2_parts.append(f"Dự án: *_{project_name_display}_*")
-
+                    
                     line_2_parts.append(f"Deadline: *{formatted_due_date}*")
+                    line_2 = " | ".join(filter(None, line_2_parts))
 
-                    line_2 = " | ".join(filter(None, line_2_parts)) # Nối các phần tử của dòng 2, bỏ qua nếu rỗng
-
-                    # --- Hiển thị ra giao diện ---
                     deadline_color = get_deadline_color(task.get('due_date'))
                     st.markdown(f'<div style="background-color: {deadline_color}; border-radius: 7px; padding: 10px; margin-bottom: 10px;">', unsafe_allow_html=True)
-
-                    # Hiển thị 2 dòng thông tin đã tạo
+                    
                     st.markdown(f"<span style='color: blue;'>{line_1}</span>", unsafe_allow_html=True)
                     st.markdown(line_2)
 
-                    # Hiển thị cảnh báo nếu quá hạn
                     if is_overdue and task.get('status') != 'Done':
-                        st.markdown("<span style='color: red;'><b>Cảnh báo: Nhiệm vụ đã quá hạn chót hoặc nhân viên đã làm xong nhưng chưa chuyển trạng thái Done</b></span>", unsafe_allow_html=True)
-                  
+                        st.markdown("<span style='color: red;'><b>Lưu ý: Nhiệm vụ đã quá hạn hoặc đã làm xong nhưng nhân viên chưa chuyển trạng thái Done</b></span>", unsafe_allow_html=True)
+
                     with st.expander("Chi tiết & Thảo luận"):
+                        # ... (Toàn bộ code trong expander giữ nguyên y hệt như cũ) ...
                         if has_new_message:
                             if st.button("✔️ Đánh dấu đã đọc", key=f"read_mgr_{task['id']}", help="Bấm vào đây để xác nhận bạn đã xem tin nhắn mới nhất.", disabled=is_expired) and not is_expired:
                                 mark_task_as_read(supabase_new, task['id'], user.id)
@@ -679,8 +696,8 @@ else:
                             with st.form(key=f"edit_form_{task['id']}", clear_on_submit=True):
                                 st.markdown("##### **📝 Cập nhật thông tin công việc**")
                                 new_task_name = st.text_input("Tên công việc", value=task.get('task_name', ''))
-                                project_options_map = {p['project_name']: p['id'] for p in all_projects_new} if all_projects_new else {}
-                                project_names = list(project_options_map.keys())
+                                project_options_map_edit = {p['project_name']: p['id'] for p in all_projects_new} if all_projects_new else {}
+                                project_names = list(project_options_map_edit.keys())
                                 employee_options_map = {e['full_name']: e['id'] for e in active_employees}
                                 employee_names = list(employee_options_map.keys())
                                 priorities = ['Low', 'Medium', 'High']
@@ -719,7 +736,7 @@ else:
                                     updates_dict = {}
                                     if new_task_name and new_task_name != task.get('task_name'):
                                         updates_dict['task_name'] = new_task_name
-                                    selected_project_id = project_options_map.get(new_project_name)
+                                    selected_project_id = project_options_map_edit.get(new_project_name)
                                     if selected_project_id and selected_project_id != task.get('project_id'):
                                         updates_dict['project_id'] = selected_project_id
                                     selected_employee_id = employee_options_map.get(new_assignee_name)
@@ -759,10 +776,10 @@ else:
                         meta_cols[0].write(task.get('priority', 'N/A'))
                         meta_cols[1].markdown("**Hạn chót**")
                         try:
-                            formatted_due_date = datetime.fromisoformat(task['due_date']).astimezone(local_tz).strftime('%d/%m/%Y, %H:%M')
+                            formatted_due_date_detail = datetime.fromisoformat(task['due_date']).astimezone(local_tz).strftime('%d/%m/%Y, %H:%M')
                         except (ValueError, TypeError):
-                            formatted_due_date = task.get('due_date', 'N/A')
-                        meta_cols[1].write(formatted_due_date)
+                            formatted_due_date_detail = task.get('due_date', 'N/A')
+                        meta_cols[1].write(formatted_due_date_detail)
                         meta_cols[2].markdown("**Người giao**")
                         meta_cols[2].write(task.get('creator_name', 'N/A'))
                         if task['description']:
@@ -776,9 +793,9 @@ else:
                             else:
                                 for comment in comments:
                                     commenter_name = comment.get('profiles', {}).get('full_name', "Người dùng ẩn")
-                                    is_manager = 'manager' in comment.get('profiles', {}).get('role', 'employee')
+                                    is_manager_comment = 'manager' in comment.get('profiles', {}).get('role', 'employee')
                                     comment_time_local = datetime.fromisoformat(comment['created_at']).astimezone(local_tz).strftime('%H:%M, %d/%m/%Y')
-                                    st.markdown(f"<div style='border-left: 3px solid {'#ff4b4b' if is_manager else '#007bff'}; padding-left: 10px; margin-bottom: 10px;'><b>{commenter_name}</b> {'(Quản lý)' if is_manager else ''} <span style='font-size: 0.8em; color: gray;'><i>({comment_time_local})</i></span>:<br>{comment['content']}</div>", unsafe_allow_html=True)
+                                    st.markdown(f"<div style='border-left: 3px solid {'#ff4b4b' if is_manager_comment else '#007bff'}; padding-left: 10px; margin-bottom: 10px;'><b>{commenter_name}</b> {'(Quản lý)' if is_manager_comment else ''} <span style='font-size: 0.8em; color: gray;'><i>({comment_time_local})</i></span>:<br>{comment['content']}</div>", unsafe_allow_html=True)
                                     if comment.get('attachment_url'):
                                         url = comment['attachment_url']
                                         file_name = comment.get('attachment_original_name', 'downloaded_file')

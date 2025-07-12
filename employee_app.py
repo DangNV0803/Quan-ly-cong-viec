@@ -315,63 +315,57 @@ else:
         st.info("🎉 Bạn không có công việc nào cần làm. Hãy tận hưởng thời gian rảnh!")
     else:
         local_tz = ZoneInfo("Asia/Ho_Chi_Minh")
-        # Tải trạng thái đã đọc (đã được chuyển sang UTC trong hàm)
         read_statuses = fetch_read_statuses(supabase, user.id)
 
+        # --- Bước 1: Nhóm các công việc theo dự án ---
         tasks_by_project = defaultdict(list)
         for task in my_tasks:
             project_info = task.get('projects')
             project_key = (project_info.get('project_name', 'Dự án không tên'), project_info.get('old_project_ref_id')) if project_info else ("Công việc chung", None)
             tasks_by_project[project_key].append(task)
         
-        sorted_projects = sorted(tasks_by_project.items(), key=lambda item: min(t['due_date'] for t in item[1]))
+        # --- Bước 2: Tạo hộp tìm kiếm/chọn lựa dự án ---
+        project_keys = sorted(tasks_by_project.keys(), key=lambda item: item[0])
+        options_map = {f"{name} (Mã: {code})" if code else name: key for key, (name, code) in zip(project_keys, project_keys)}
+        options_list = ["--- Hiển thị tất cả ---"] + list(options_map.keys())
+
+        selected_option = st.selectbox("🔍 Tìm và nhảy đến Dự án", options=options_list)
+        st.divider()
+
+        # --- Bước 3: Lọc dữ liệu dựa trên lựa chọn ---
+        if selected_option and selected_option != "--- Hiển thị tất cả ---":
+            selected_key = options_map[selected_option]
+            projects_to_display = {selected_key: tasks_by_project[selected_key]}
+        else:
+            projects_to_display = tasks_by_project
+
+        # Sắp xếp các dự án theo deadline sớm nhất trong dự án đó
+        sorted_projects = sorted(projects_to_display.items(), key=lambda item: min(t.get('due_date') or '9999' for t in item[1]))
+
+        if not sorted_projects:
+            st.info("Không tìm thấy kết quả phù hợp.")
 
         for (project_name, project_code), tasks in sorted_projects:
             display_title = f"Dự án: {project_name}" + (f" (Mã: {project_code})" if project_code else "")
             st.subheader(display_title)
 
+            # Sắp xếp các task trong dự án này theo deadline
             sorted_tasks_in_project = sorted(tasks, key=lambda t: (t.get('due_date') is None, t.get('due_date')))
             task_counter = 0
 
-            for task in tasks:
+            for task in sorted_tasks_in_project:
+                # --- Phần code hiển thị chi tiết mỗi công việc (giữ nguyên như cũ) ---
                 task_counter += 1
                 comments = fetch_comments(task['id'])
-                # ==========================================================
-                # # DÁN ĐOẠN CODE CHẨN ĐOÁN TẠM THỜI 
-                # st.markdown("---")
-                # st.json({
-                #     "TASK ID": task['id'],
-                #     "TASK NAME": task['task_name']
-                # })
                 
-                # last_read_time_utc = read_statuses.get(task['id'], datetime.fromtimestamp(0, tz=timezone.utc))
-
-                # last_event_time_utc = datetime.fromisoformat(task['created_at']).astimezone(timezone.utc)
-                # if comments:
-                #     last_comment_time_utc = datetime.fromisoformat(comments[0]['created_at']).astimezone(timezone.utc)
-                #     if last_comment_time_utc > last_event_time_utc:
-                #         last_event_time_utc = last_comment_time_utc
-
-                # st.code(f"Thời gian sự kiện cuối (UTC): {last_event_time_utc}")
-                # st.code(f"Thời gian đọc cuối (UTC):   {last_read_time_utc}")
-
-                # is_new = last_event_time_utc > last_read_time_utc
-                # st.info(f"So sánh (Sự kiện > Đọc cuối): {is_new}")
-                # # KẾT THÚC ĐOẠN CODE CHẨN ĐOÁN
-                # # ==========================================================
-                
-                # --- LOGIC THÔNG BÁO MỚI (ĐÃ SỬA LỖI) ---
                 status_icon = ""
                 has_new_message = False
-
                 last_read_time_utc = read_statuses.get(task['id'], datetime.fromtimestamp(0, tz=timezone.utc))
-
                 last_event_time_utc = datetime.fromisoformat(task['created_at']).astimezone(timezone.utc)
                 if comments:
                     last_comment_time_utc = datetime.fromisoformat(comments[0]['created_at']).astimezone(timezone.utc)
                     if last_comment_time_utc > last_event_time_utc:
                         last_event_time_utc = last_comment_time_utc
-
                 if comments and comments[0]['user_id'] == user.id:
                     status_icon = "✅ Đã trả lời"
                 elif last_event_time_utc > last_read_time_utc:
@@ -380,7 +374,6 @@ else:
                 elif comments:
                     status_icon = "✔️ Đã xem"
 
-                # --- Logic mới: Kiểm tra nhiệm vụ có bị quá hạn không ---
                 is_overdue = False
                 if task.get('due_date'):
                     try:
@@ -390,16 +383,12 @@ else:
                     except (ValueError, TypeError):
                         is_overdue = False
 
-                # --- Chuẩn bị các dòng thông tin để hiển thị ---
-                # Dòng 1: Số thứ tự và Tên công việc
                 line_1 = f"**Task {task_counter}. {task['task_name']}**"
-
-                # Dòng 2: Trạng thái và Deadline
                 try:
                     formatted_due_date = datetime.fromisoformat(task['due_date']).astimezone(local_tz).strftime('%d/%m/%Y, %H:%M')
                 except (ValueError, TypeError):
                     formatted_due_date = 'N/A'
-
+                
                 line_2_parts = [
                     status_icon,
                     f"Trạng thái: *{task['status']}*",
@@ -407,19 +396,17 @@ else:
                 ]
                 line_2 = " | ".join(filter(None, line_2_parts))
 
-                # --- Hiển thị ra giao diện ---
                 deadline_color = get_deadline_color(task.get('due_date'))
                 st.markdown(f'<div style="background-color: {deadline_color}; border-radius: 7px; padding: 10px; margin-bottom: 10px;">', unsafe_allow_html=True)
-
+                
                 st.markdown(f"<span style='color: blue;'>{line_1}</span>", unsafe_allow_html=True)
                 st.markdown(line_2)
 
-                # Hiển thị cảnh báo nếu quá hạn VÀ chưa được hoàn thành
                 if is_overdue and task.get('status') != 'Done':
-                    st.markdown("<span style='color: red;'><b>Lưu ý: Nhiệm vụ đã quá hạn hoặc bạn chưa chuyển trạng thái Done khi đã làm xong</b></span>", unsafe_allow_html=True)
+                    st.markdown("<span style='color: red;'><b>Lưu ý: Nhiệm vụ đã quá hạn hoặc đã làm xong nhưng bạn chưa chuyển trạng thái Done</b></span>", unsafe_allow_html=True)
 
                 with st.expander("Chi tiết & Thảo luận"):
-                    # LOGIC MỚI: Chỉ đánh dấu đã đọc khi người dùng bấm nút
+                    # ... (Toàn bộ code trong expander giữ nguyên y hệt như cũ) ...
                     if has_new_message:
                         if st.button("✔️ Đánh dấu đã đọc", key=f"read_emp_{task['id']}", help="Bấm vào đây để xác nhận bạn đã xem tin nhắn mới nhất.", disabled=is_expired) and not is_expired:
                             mark_task_as_read(supabase, task['id'], user.id)
@@ -427,7 +414,6 @@ else:
                             st.rerun()
                         st.divider()
 
-                    # --- Toàn bộ code hiển thị chi tiết, thảo luận... của bạn vẫn giữ nguyên ở đây ---
                     st.markdown("#### Chi tiết công việc")
                     col1, col2 = st.columns(2)
                     with col1:
@@ -457,12 +443,12 @@ else:
                         else:
                             for comment in comments:
                                 commenter_name = comment.get('profiles', {}).get('full_name', "Người dùng ẩn")
-                                is_manager = comment.get('profiles', {}).get('role') == 'manager'
+                                is_manager_comment = comment.get('profiles', {}).get('role') == 'manager'
                                 comment_time_local = datetime.fromisoformat(comment['created_at']).astimezone(local_tz).strftime('%H:%M, %d/%m/%Y')
                                 
                                 st.markdown(
-                                    f"<div style='border-left: 3px solid {'#ff4b4b' if is_manager else '#007bff'}; padding-left: 10px; margin-bottom: 10px;'>"
-                                    f"<b>{commenter_name}</b> {'(Quản lý)' if is_manager else ''} <span style='font-size: 0.8em; color: gray;'><i>({comment_time_local})</i></span>:<br>"
+                                    f"<div style='border-left: 3px solid {'#ff4b4b' if is_manager_comment else '#007bff'}; padding-left: 10px; margin-bottom: 10px;'>"
+                                    f"<b>{commenter_name}</b> {'(Quản lý)' if is_manager_comment else ''} <span style='font-size: 0.8em; color: gray;'><i>({comment_time_local})</i></span>:<br>"
                                     f"{comment['content']}"
                                     "</div>",
                                     unsafe_allow_html=True
@@ -481,7 +467,6 @@ else:
                                             file_name=file_name,
                                             key=f"download_emp_{task['id']}_{comment['id']}"
                                         )
-                                        # Thêm dòng này để hiển thị tên file bên dưới
                                         st.caption(f"{file_name}")
                                     except requests.exceptions.RequestException as e:
                                         st.error(f"Không thể tải tệp: {e}")
@@ -491,16 +476,12 @@ else:
                         uploaded_file = st.file_uploader("Đính kèm file (Word, RAR, ZIP <2MB)", type=['doc', 'docx', 'rar', 'zip'], accept_multiple_files=False, key=f"file_{task['id']}",disabled=is_expired)
                         
                         submitted_comment = st.form_submit_button("Gửi bình luận",disabled=is_expired)
-                        # =========================================================
-                        # Bắt lại nội dung nếu gửi khi hết hạn
                         if submitted_comment and is_expired and (comment_content or uploaded_file):
                             st.warning("⚠️ Nội dung của bạn CHƯA ĐƯỢC GỬI do phiên làm việc đã hết hạn. Dưới đây là bản sao để bạn tiện lưu lại:")
                             if comment_content:
-                                # Hiển thị lại nội dung text trong một khung code dễ sao chép
                                 st.code(comment_content, language=None)
                             if uploaded_file:
                                 st.info(f"Bạn cũng đã đính kèm tệp: **{uploaded_file.name}**. Vui lòng tải lại tệp này sau khi đăng nhập.")
-                        # =========================================================
                         if submitted_comment and (comment_content or uploaded_file) and not is_expired:
                             add_comment(task['id'], user.id, comment_content, uploaded_file)
                             st.rerun()
