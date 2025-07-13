@@ -36,7 +36,7 @@ supabase = init_supabase_client()
 def fetch_my_tasks(user_id: str):
     """Fetches tasks assigned to the current logged-in user, ordered by due date."""
     try:
-        response = supabase.table('tasks').select('*, projects(project_name, id, old_project_ref_id), is_completed_by_manager').eq('assigned_to', user_id).order('due_date', desc=False).execute()
+        response = supabase.table('tasks').select('*, projects(project_name, id, old_project_ref_id), is_completed_by_manager, manager:completed_by_manager_id(full_name)').eq('assigned_to', user_id).order('due_date', desc=False).execute()
         return response.data if response.data else []
     except Exception as e:
         st.error(f"Lỗi khi tải công việc: {e}")
@@ -416,7 +416,12 @@ else:
                 with st.expander("Chi tiết & Thảo luận"):
                     # <<< THÊM ĐOẠN CODE MỚI TẠI ĐÂY >>>
                     if is_manager_completed:
-                        st.success("✓ Công việc này đã được quản lý xác nhận hoàn thành. Mọi thao tác đã được khóa.")
+                        # Lấy thông tin quản lý từ dữ liệu task
+                        manager_info = task.get('manager')
+                        # Lấy tên, nếu không có thì dùng từ 'Quản lý' làm mặc định
+                        manager_name = manager_info.get('full_name', 'hoặc Admin') if manager_info else 'hoặc Admin'
+                        # Hiển thị thông báo với tên cụ thể
+                        st.success(f"✓ Công việc này đã được Quản lý **{manager_name}** xác nhận hoàn thành. Mọi thao tác đã được khóa.")
                         st.divider()
                     # <<< KẾT THÚC >>>
                     if has_new_message:

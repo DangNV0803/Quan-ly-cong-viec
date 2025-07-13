@@ -81,7 +81,7 @@ def fetch_all_projects_new(_client: Client):
 def fetch_all_tasks_and_details(_client: Client):
     """Fetches all tasks and joins related data like project and profile names."""
     try:
-        tasks_res = _client.table('tasks').select('*, projects(project_name, old_project_ref_id)').order('created_at', desc=True).execute()
+        tasks_res = _client.table('tasks').select('*, projects(project_name, old_project_ref_id), completer:completed_by_manager_id(full_name)').order('created_at', desc=True).execute()
         tasks = tasks_res.data if tasks_res.data else []
         profiles = fetch_all_profiles(_client)
         if profiles is None: profiles = []
@@ -685,7 +685,21 @@ else:
 
                     # Ưu tiên hiển thị thông báo "Đã khóa" nếu có
                     if is_completed:
-                        st.success("✓ Công việc này đã được bạn xác nhận hoàn thành và đã bị khóa đối với nhân viên.")
+                        # Lấy thông tin người xác nhận từ dữ liệu task
+                        completer_info = task.get('completer')
+                        completer_name = completer_info.get('full_name') if completer_info else None
+
+                        # Kiểm tra xem có tên người xác nhận không
+                        if completer_name:
+                            # Nếu người xác nhận là chính bạn đang đăng nhập
+                            if task.get('completed_by_manager_id') == user.id:
+                                st.success(f"✓ Công việc này đã được **bạn** xác nhận hoàn thành và đã bị khóa đối với nhân viên.")
+                            # Nếu là một quản lý khác
+                            else:
+                                st.success(f"✓ Công việc này đã được quản lý **{completer_name}** xác nhận hoàn thành và đã bị khóa.")
+                        else:
+                            # Dự phòng cho các dữ liệu cũ chưa có thông tin người xác nhận
+                            st.success("✓ Công việc này đã được xác nhận hoàn thành và đã bị khóa đối với nhân viên.")
                     # Nếu chưa khóa, mới kiểm tra và hiển thị cảnh báo "Quá hạn"
                     elif is_overdue and task.get('status') != 'Done':
                         st.markdown("<span style='color: red;'><b>Lưu ý: Nhiệm vụ đã quá hạn hoặc đã làm xong nhưng nhân viên chưa chuyển trạng thái Done</b></span>", unsafe_allow_html=True)
@@ -702,7 +716,14 @@ else:
                         
                         # Nếu có sự thay đổi trạng thái từ công tắc
                         if new_completed_status != is_completed and not is_expired:
-                            update_task_details(task['id'], {'is_completed_by_manager': new_completed_status})
+                            # Tạo một dictionary chứa các cập nhật
+                            # Nếu bật công tắc, lưu ID của bạn. Nếu tắt, đặt lại là None (NULL)
+                            updates = {
+                                'is_completed_by_manager': new_completed_status,
+                                'completed_by_manager_id': user.id if new_completed_status else None
+                            }
+                            # Gọi hàm cập nhật với dữ liệu mới
+                            update_task_details(task['id'], updates)
                             st.rerun() # Tải lại trang để cập nhật giao diện
                         
                         if has_new_message:
