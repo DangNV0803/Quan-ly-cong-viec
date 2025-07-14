@@ -36,7 +36,7 @@ supabase = init_supabase_client()
 def fetch_my_tasks(user_id: str):
     """Fetches tasks assigned to the current logged-in user, ordered by due date."""
     try:
-        response = supabase.table('tasks').select('*, projects(project_name, id, old_project_ref_id), is_completed_by_manager, manager:completed_by_manager_id(full_name)').eq('assigned_to', user_id).order('due_date', desc=False).execute()
+        response = supabase.table('tasks').select('*, projects(project_name, id, old_project_ref_id), is_completed_by_manager, manager:completed_by_manager_id(full_name), manager_rating, manager_review').eq('assigned_to', user_id).order('due_date', desc=False).execute()
         return response.data if response.data else []
     except Exception as e:
         st.error(f"Lỗi khi tải công việc: {e}")
@@ -422,8 +422,23 @@ else:
                         manager_name = manager_info.get('full_name', 'hoặc Admin') if manager_info else 'hoặc Admin'
                         # Hiển thị thông báo với tên cụ thể
                         st.success(f"✓ Công việc này đã được Quản lý **{manager_name}** xác nhận hoàn thành. Mọi thao tác đã được khóa.")
+
+                        # --- BẮT ĐẦU CODE MỚI ---
+                        # Lấy dữ liệu đánh giá từ task
+                        rating = task.get('manager_rating')
+                        review = task.get('manager_review')
+
+                        if rating: # Chỉ hiển thị nếu có đánh giá
+                            stars = "⭐" * rating + "☆" * (5 - rating)
+                            st.markdown(f"#### **Đánh giá từ quản lý:**")
+                            st.markdown(f"**Xếp hạng:** <span style='font-size: 1.2em; color: orange;'>{stars}</span>", unsafe_allow_html=True)
+
+                            if review:
+                                st.markdown("**Nhận xét:**")
+                                st.info(review)
+                        # --- KẾT THÚC CODE MỚI ---
+                        
                         st.divider()
-                    # <<< KẾT THÚC >>>
                     if has_new_message:
                         if st.button("✔️ Đánh dấu đã đọc", key=f"read_emp_{task['id']}", help="Bấm vào đây để xác nhận bạn đã xem tin nhắn mới nhất.", disabled=is_expired) and not is_expired:
                             mark_task_as_read(supabase, task['id'], user.id)

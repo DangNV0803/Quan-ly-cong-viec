@@ -81,7 +81,7 @@ def fetch_all_projects_new(_client: Client):
 def fetch_all_tasks_and_details(_client: Client):
     """Fetches all tasks and joins related data like project and profile names."""
     try:
-        tasks_res = _client.table('tasks').select('*, projects(project_name, old_project_ref_id), completer:completed_by_manager_id(full_name)').order('created_at', desc=True).execute()
+        tasks_res = _client.table('tasks').select('*, projects(project_name, old_project_ref_id), completer:completed_by_manager_id(full_name), manager_rating, manager_review').order('created_at', desc=True).execute()
         tasks = tasks_res.data if tasks_res.data else []
         profiles = fetch_all_profiles(_client)
         if profiles is None: profiles = []
@@ -733,6 +733,73 @@ else:
                                 st.rerun()
                             st.divider()
                         
+                        # --- BẮT ĐẦU: CODE MỚI ---
+                        st.divider()
+
+                        # Phần 1: Cho phép quản lý thay đổi trạng thái công việc
+                        st.markdown("##### **Trạng thái & Đánh giá**")
+                        col_status, col_rating = st.columns(2)
+
+                        with col_status:
+                            status_options = ['To Do', 'In Progress', 'Done']
+                            try:
+                                current_status_index = status_options.index(task['status'])
+                            except ValueError:
+                                current_status_index = 0 # Mặc định là 'To Do' nếu trạng thái không hợp lệ
+
+                            new_status = st.selectbox(
+                                "Cập nhật trạng thái:",
+                                options=status_options,
+                                index=current_status_index,
+                                key=f"status_mgr_{task['id']}",
+                                disabled=is_expired
+                            )
+                            if new_status != task['status'] and not is_expired:
+                                update_task_details(task['id'], {'status': new_status})
+                                st.rerun()
+
+                        # Phần 2: Hiển thị đánh giá và form nhập nếu công việc đã khóa
+                        if is_completed:
+                            with col_rating:
+                                # Lấy đánh giá hiện tại
+                                current_rating = task.get('manager_rating', 0)
+                                current_review = task.get('manager_review', '')
+
+                                # Hiển thị sao
+                                stars = "⭐" * current_rating + "☆" * (5 - current_rating)
+                                st.markdown(f"**Đánh giá:** {stars}")
+
+                            # Form để cập nhật đánh giá (sao và review)
+                            with st.form(key=f"review_form_{task['id']}", clear_on_submit=False):
+                                st.markdown("**Cập nhật đánh giá của bạn:**")
+                                
+                                # Nhập số sao
+                                new_rating = st.number_input(
+                                    "Số sao (1-5)", 
+                                    min_value=1, max_value=5, 
+                                    value=current_rating or 3, # Mặc định là 3 nếu chưa có
+                                    step=1, 
+                                    key=f"rating_input_{task['id']}",
+                                    disabled=is_expired
+                                )
+                                
+                                # Nhập review
+                                new_review = st.text_area(
+                                    "Nhận xét chi tiết (tùy chọn):", 
+                                    value=current_review, 
+                                    key=f"review_input_{task['id']}",
+                                    disabled=is_expired
+                                )
+
+                                submitted_review = st.form_submit_button("Lưu đánh giá", use_container_width=True, type="primary", disabled=is_expired)
+                                if submitted_review and not is_expired:
+                                    review_updates = {
+                                        'manager_rating': new_rating,
+                                        'manager_review': new_review
+                                    }
+                                    update_task_details(task['id'], review_updates)
+                                    st.rerun()
+                        # --- KẾT THÚC: CODE MỚI ---
                                                 
                         if st.toggle("✏️ Chỉnh sửa công việc", key=f"edit_toggle_{task['id']}",disabled= is_expired):
                             with st.form(key=f"edit_form_{task['id']}", clear_on_submit=True):
