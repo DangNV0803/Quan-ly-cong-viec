@@ -411,7 +411,7 @@ else:
                 st.markdown(line_2)
 
                 if is_overdue and task.get('status') != 'Done' and not is_manager_completed:
-                    st.markdown("<span style='color: red;'><b>Lưu ý: Nhiệm vụ đã quá hạn hoặc đã làm xong nhưng bạn chưa chuyển trạng thái Done</b></span>", unsafe_allow_html=True)
+                    st.markdown("<span style='color: red;'><b>Lưu ý: Nhiệm vụ đã quá hạn hoặc người quản lý đã chuyển trạng thái thực hiện do có yêu cầu mới (vui lòng kiểm tra)! </b></span>", unsafe_allow_html=True)
 
                 with st.expander("Chi tiết & Thảo luận"):
                     # <<< THÊM ĐOẠN CODE MỚI TẠI ĐÂY >>>
