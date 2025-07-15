@@ -16,6 +16,20 @@ st.set_page_config(
     page_icon="👨‍💼"
 )
 
+# CSS để đảm bảo mỏ neo hoạt động tốt
+st.markdown("""
+<style>
+    /* Neo cố định vị trí */
+    [id^="task-anchor-"] {
+        scroll-margin-top: 80px;
+        position: absolute;
+        visibility: hidden;
+        pointer-events: none;
+        z-index: -1;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # --- Supabase Connection ---
 @st.cache_resource
 def init_supabase_auth_client() -> Client:
@@ -251,6 +265,18 @@ def update_account_status(user_id: str, new_status: str):
         st.error("Yêu cầu tới Supabase Auth THẤT BẠI!")
         st.exception(e)
 
+def reset_filter_callback():
+    """Reset lại bộ lọc về 'Hiển thị tất cả' khi thay đổi cách nhóm."""
+    if 'manager_filter' in st.session_state:
+        st.session_state.manager_filter = "--- Hiển thị tất cả ---"
+
+def handle_toggle_change(task_id):
+    """Cập nhật trạng thái của một nút gạt và đặt mục tiêu cuộn trang."""
+    # Luôn đặt mục tiêu cuộn đến đúng công việc này trước
+    st.session_state['scroll_to_task'] = task_id
+    # Sau đó mới đảo ngược trạng thái của nút gạt
+    st.session_state.edit_toggle_states[task_id] = not st.session_state.edit_toggle_states.get(task_id, False)
+
 def update_task_details(task_id: int, updates: dict):
     """Cập nhật các trường cụ thể cho một công việc."""
     try:
@@ -342,6 +368,7 @@ def delete_employee(user_id: str):
         if 'user_to_delete' in st.session_state:
             del st.session_state.user_to_delete
         st.rerun()
+        
 
 def get_or_create_project_in_new_db(project_from_old: dict) -> int:
     ref_id = project_from_old.get('quotation_no')
@@ -396,6 +423,8 @@ if 'user' not in st.session_state:
     st.session_state.user = None
 if 'manager_profile' not in st.session_state:
     st.session_state.manager_profile = None
+if 'edit_toggle_states' not in st.session_state:
+    st.session_state.edit_toggle_states = defaultdict(bool)
 
 # --- Login UI ---
 if st.session_state.user is None:
@@ -455,6 +484,7 @@ else:
     # ===================================================================
     # KẾT THÚC: LOGIC KIỂM TRA KHÔNG HOẠT ĐỘNG
     # ===================================================================
+    
     manager_profile = st.session_state.manager_profile
     user = st.session_state.user
     
@@ -564,7 +594,8 @@ else:
             "Nhóm công việc theo:",
             ('Dự án', 'Nhân viên'),
             horizontal=True,
-            key="grouping_tasks"
+            key="manager_grouping", # Đặt một key cố định
+            on_change=reset_filter_callback # Gọi hàm reset khi thay đổi
         )
 
         if not all_tasks:
@@ -599,7 +630,7 @@ else:
             # Thêm lựa chọn "Hiển thị tất cả" vào đầu danh sách
             options_list = ["--- Hiển thị tất cả ---"] + list(options_map.keys())
             
-            selected_option = st.selectbox(label, options=options_list)
+            selected_option = st.selectbox(label, options=options_list, key="manager_filter")
             st.divider()
 
             # --- Bước 3: Lọc dữ liệu dựa trên lựa chọn của người dùng ---
@@ -675,7 +706,13 @@ else:
                     line_2 = " | ".join(filter(None, line_2_parts))
 
                     deadline_color = get_deadline_color(task.get('due_date'))
+                    #Tạo mỏ neo
+                    # Đúng: Neo đặt trước, sau đó mới mở container
+                    st.markdown(f'<div id="task-anchor-{task["id"]}" style="height: 60px; margin-top: -60px; position: absolute; visibility: hidden;"></div>', unsafe_allow_html=True)
+
+                    # Sau đó mới hiển thị container
                     st.markdown(f'<div style="background-color: {deadline_color}; border-radius: 7px; padding: 10px; margin-bottom: 10px;">', unsafe_allow_html=True)
+                             
                     
                     st.markdown(f"<span style='color: blue;'>{line_1}</span>", unsafe_allow_html=True)
                     st.markdown(line_2)
@@ -723,8 +760,9 @@ else:
                                 'completed_by_manager_id': user.id if new_completed_status else None
                             }
                             # Gọi hàm cập nhật với dữ liệu mới
-                            update_task_details(task['id'], updates)
-                            st.rerun() # Tải lại trang để cập nhật giao diện
+                            st.session_state['scroll_to_task'] = task['id']  # Đặt trước 
+                            update_task_details(task['id'], updates)  # Sau đó mới cập nhật
+                            st.rerun()  # Biến scroll_to_task đã được lưu vào session state
                         
                         if has_new_message:
                             if st.button("✔️ Đánh dấu đã đọc", key=f"read_mgr_{task['id']}", help="Bấm vào đây để xác nhận bạn đã xem tin nhắn mới nhất.", disabled=is_expired) and not is_expired:
@@ -755,8 +793,9 @@ else:
                                 disabled=is_expired
                             )
                             if new_status != task['status'] and not is_expired:
+                                st.session_state['scroll_to_task'] = task['id']
                                 update_task_details(task['id'], {'status': new_status})
-                                st.rerun()
+                                
 
                         # Phần 2: Hiển thị đánh giá và form nhập nếu công việc đã khóa
                         if is_completed:
@@ -797,11 +836,26 @@ else:
                                         'manager_rating': new_rating,
                                         'manager_review': new_review
                                     }
+                                    st.session_state['scroll_to_task'] = task['id']
                                     update_task_details(task['id'], review_updates)
-                                    st.rerun()
+                                    
                         # --- KẾT THÚC: CODE MỚI ---
                                                 
-                        if st.toggle("✏️ Chỉnh sửa công việc", key=f"edit_toggle_{task['id']}",disabled= is_expired):
+                        # Lấy trạng thái của nút gạt từ "bộ nhớ"
+                        edit_mode = st.session_state.edit_toggle_states.get(task['id'], False)
+
+                        # Nút gạt giờ sẽ có on_change để gọi hàm callback
+                        st.toggle(
+                            "✏️ Chỉnh sửa công việc", 
+                            value=edit_mode, # Giá trị được lấy từ bộ nhớ
+                            key=f"edit_toggle_{task['id']}",
+                            on_change=handle_toggle_change, # Gọi hàm xử lý khi có thay đổi
+                            args=(task['id'],), # Truyền ID của công việc vào hàm
+                            disabled=is_expired
+                        )
+
+                        # Hiển thị form nếu nút gạt đang ở trạng thái Bật (True)
+                        if edit_mode:
                             with st.form(key=f"edit_form_{task['id']}", clear_on_submit=True):
                                 st.markdown("##### **📝 Cập nhật thông tin công việc**")
                                 new_task_name = st.text_input("Tên công việc", value=task.get('task_name', ''))
@@ -858,9 +912,9 @@ else:
                                     if aware_deadline.isoformat() != task.get('due_date'):
                                         updates_dict['due_date'] = aware_deadline.isoformat()
                                     if updates_dict:
+                                        st.session_state['scroll_to_task'] = task['id']
                                         update_task_details(task['id'], updates_dict)
                                         st.toast("Cập nhật thành công!", icon="✅")
-                                        st.rerun()
                                     else:
                                         st.toast("Không có thay đổi nào để lưu.", icon="🤷‍♂️")
 
@@ -931,8 +985,9 @@ else:
                                 if uploaded_file:
                                     st.info(f"Bạn cũng đã đính kèm tệp: **{uploaded_file.name}**. Vui lòng tải lại tệp này sau khi đăng nhập.")
                             if submitted_comment and (comment_content or uploaded_file) and not is_expired:
+                                st.session_state['scroll_to_task'] = task['id']
                                 add_comment(task['id'], manager_profile['id'], comment_content, uploaded_file)
-                                st.rerun()
+                                
                     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -1135,3 +1190,63 @@ else:
                      st.error("Mật khẩu phải có ít nhất 6 ký tự.")
                 else:
                     change_password(new_password)
+    
+    # >>> BẮT ĐẦU CODE MỚI: TỰ ĐỘNG CUỘN TRANG <<<
+    if 'scroll_to_task' in st.session_state and st.session_state['scroll_to_task'] is not None:
+        task_id_to_scroll = st.session_state['scroll_to_task']
+        anchor_id = f"task-anchor-{task_id_to_scroll}"
+        
+        # Đảm bảo tất cả các dấu ngoặc nhọn của JS đều được nhân đôi {{ và }}
+        js_code = f"""
+            <script>
+                (function() {{
+                    const anchorId = '{anchor_id}';
+                    const maxWaitTime = 5000;
+
+                    console.log("Bắt đầu tìm và cuộn đến anchor:", anchorId);
+
+                    const performScroll = (element) => {{
+                        console.log("✅ Đã tìm thấy anchor:", anchorId, ". Đang cuộn...");
+                        const elementRect = element.getBoundingClientRect();
+                        const absoluteElementTop = elementRect.top + window.pageYOffset;
+                        const middle = window.innerHeight / 3;
+                        
+                        window.scrollTo({{
+                            top: absoluteElementTop - middle,
+                            behavior: 'smooth'
+                        }});
+                    }};
+
+                    const immediateElement = document.getElementById(anchorId);
+                    if (immediateElement) {{
+                        setTimeout(() => performScroll(immediateElement), 100);
+                        return;
+                    }}
+
+                    console.log("Không tìm thấy anchor ngay. Đang thiết lập MutationObserver.");
+                    const observer = new MutationObserver((mutations, obs) => {{
+                        const element = document.getElementById(anchorId);
+                        if (element) {{
+                            performScroll(element);
+                            obs.disconnect();
+                        }}
+                    }});
+
+                    observer.observe(document.body, {{
+                        childList: true,
+                        subtree: true
+                    }});
+
+                    setTimeout(() => {{
+                        observer.disconnect();
+                        console.log("⚠️ MutationObserver đã hết thời gian chờ. Dừng theo dõi anchor:", anchorId);
+                    }}, maxWaitTime);
+                }})();
+            </script>
+        """
+        from streamlit.components.v1 import html
+        html(js_code, height=0, width=0)
+        
+        st.session_state['last_scrolled_task'] = st.session_state['scroll_to_task']
+        del st.session_state['scroll_to_task']
+    # >>> KẾT THÚC CODE CUỘN TRANG<<<

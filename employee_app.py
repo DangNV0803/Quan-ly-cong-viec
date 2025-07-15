@@ -329,7 +329,11 @@ else:
         options_map = {f"{name} (Mã: {code})" if code else name: key for key, (name, code) in zip(project_keys, project_keys)}
         options_list = ["--- Hiển thị tất cả ---"] + list(options_map.keys())
 
-        selected_option = st.selectbox("🔍 Tìm và nhảy đến Dự án", options=options_list)
+        selected_option = st.selectbox(
+            "🔍 Tìm và nhảy đến Dự án", 
+            options=options_list,
+            key="selected_project_emp" 
+        )
         st.divider()
 
         # --- Bước 3: Lọc dữ liệu dựa trên lựa chọn ---
@@ -411,7 +415,7 @@ else:
                 st.markdown(line_2)
 
                 if is_overdue and task.get('status') != 'Done' and not is_manager_completed:
-                    st.markdown("<span style='color: red;'><b>Lưu ý: Nhiệm vụ đã quá hạn hoặc người quản lý đã chuyển trạng thái thực hiện do có yêu cầu mới (vui lòng kiểm tra)! </b></span>", unsafe_allow_html=True)
+                    st.markdown("<span style='color: red;'><b> Cảnh báo: Nhiệm vụ đã quá hạn hoặc người quản lý đã chuyển trạng thái thực hiện do có yêu cầu mới (vui lòng kiểm tra)!</b></span>", unsafe_allow_html=True)
 
                 with st.expander("Chi tiết & Thảo luận"):
                     # <<< THÊM ĐOẠN CODE MỚI TẠI ĐÂY >>>
