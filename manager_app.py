@@ -987,6 +987,7 @@ else:
                             if submitted_comment and (comment_content or uploaded_file) and not is_expired:
                                 st.session_state['scroll_to_task'] = task['id']
                                 add_comment(task['id'], manager_profile['id'], comment_content, uploaded_file)
+                                st.rerun()
                                 
                     st.markdown("</div>", unsafe_allow_html=True)
 
