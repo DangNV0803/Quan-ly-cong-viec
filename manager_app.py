@@ -236,7 +236,7 @@ def add_comment(task_id: int, user_id: str, content: str, uploaded_file=None):
         }
         # Dùng client 'supabase_new' cho manager
         supabase_new.table('comments').insert(insert_data).execute()
-        st.cache_data.clear()
+        # st.cache_data.clear()
         st.toast("Đã gửi bình luận!", icon="💬")
     except Exception as e:
         st.error(f"Lỗi khi thêm bình luận: {e}")
@@ -1006,6 +1006,10 @@ else:
                             if submitted_comment and (comment_content or uploaded_file) and not is_expired:
                                 st.session_state['scroll_to_task'] = task['id']
                                 add_comment(task['id'], manager_profile['id'], comment_content, uploaded_file)
+                                
+                                # Xóa cache chỉ của hàm fetch_comments để cập nhật ngay
+                                fetch_comments.clear()
+
                                 st.rerun()
                     st.markdown("</div>", unsafe_allow_html=True)
 
