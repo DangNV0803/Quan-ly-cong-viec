@@ -894,6 +894,12 @@ else:
                                     new_due_date = st.date_input("Hạn chót (ngày)", value=current_due_datetime.date(), key=f"date_edit_{task['id']}")
                                 with col5:
                                     new_due_time = st.time_input("Hạn chót (giờ)", value=current_due_datetime.time(), key=f"time_edit_{task['id']}")
+                                new_description = st.text_area(
+                                    "Mô tả chi tiết", 
+                                    value=task.get('description', ''), 
+                                    key=f"desc_edit_{task['id']}",
+                                    height=150
+                                )
                                 submitted_edit = st.form_submit_button("💾 Lưu thay đổi", use_container_width=True, type="primary",disabled=is_expired)
                                 if submitted_edit and not is_expired:
                                     updates_dict = {}
@@ -909,6 +915,9 @@ else:
                                         updates_dict['priority'] = new_priority
                                     naive_deadline = datetime.combine(new_due_date, new_due_time)
                                     aware_deadline = naive_deadline.replace(tzinfo=local_tz)
+                                    original_description = task.get('description', '')
+                                    if new_description != original_description:
+                                        updates_dict['description'] = new_description
                                     if aware_deadline.isoformat() != task.get('due_date'):
                                         updates_dict['due_date'] = aware_deadline.isoformat()
                                     if updates_dict:
