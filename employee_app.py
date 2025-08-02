@@ -494,22 +494,32 @@ else:
                                     url = comment['attachment_url']
                                     file_name = comment.get('attachment_original_name', 'downloaded_file')
                                     
-                                    try:
-                                        response = requests.get(url)
-                                        response.raise_for_status()
-                                        st.download_button(
-                                            label="📂 Tải file đính kèm",
-                                            data=response.content,
-                                            file_name=file_name,
-                                            key=f"download_emp_{task['id']}_{comment['id']}"
-                                        )
-                                        st.caption(f"{file_name}")
-                                    except requests.exceptions.RequestException as e:
-                                        st.error(f"Không thể tải tệp: {e}")
+                                    # --- BẮT ĐẦU THAY ĐỔI ---
+                                    # Kiểm tra đuôi file để quyết định cách hiển thị
+                                    is_image = file_name.lower().endswith(('.png', '.jpg', '.jpeg'))
+
+                                    if is_image:
+                                        # Nếu là ảnh, hiển thị trực tiếp
+                                        st.image(url, caption=f"Ảnh đính kèm: {file_name}", width=300) 
+                                    else:
+                                        # Nếu là các loại file khác, dùng nút tải xuống
+                                        try:
+                                            response = requests.get(url)
+                                            response.raise_for_status()
+                                            st.download_button(
+                                                label="📂 Tải file đính kèm",
+                                                data=response.content,
+                                                file_name=file_name,
+                                                key=f"download_emp_{task['id']}_{comment['id']}"
+                                            )
+                                            st.caption(f"{file_name}")
+                                        except requests.exceptions.RequestException as e:
+                                            st.error(f"Không thể tải tệp: {e}")
+                                    # --- KẾT THÚC THAY ĐỔI ---
                     
                     with st.form(key=f"comment_form_{task['id']}", clear_on_submit=True):
                         comment_content = st.text_area("Thêm bình luận của bạn:", key=f"comment_text_{task['id']}", label_visibility="collapsed", placeholder="Nhập trao đổi về công việc...",disabled=is_task_locked)
-                        uploaded_file = st.file_uploader("Đính kèm file (Word, RAR, ZIP <2MB)", type=['doc', 'docx', 'rar', 'zip'], accept_multiple_files=False, key=f"file_{task['id']}",disabled=is_task_locked)
+                        uploaded_file = st.file_uploader("Đính kèm file (Ảnh, Word, RAR, ZIP <2MB)", type=['jpg', 'png', 'doc', 'docx', 'rar', 'zip'], accept_multiple_files=False, key=f"file_{task['id']}",disabled=is_task_locked)
                         
                         submitted_comment = st.form_submit_button("Gửi bình luận",disabled=is_task_locked)
                         if submitted_comment and is_task_locked and (comment_content or uploaded_file):
