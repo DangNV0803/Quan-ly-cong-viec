@@ -754,7 +754,7 @@ else:
                     except (ValueError, TypeError):
                         is_overdue = False
 
-                line_1 = f"**Task {task_counter}. {task['task_name']}**"
+                line_1 = f"**Nhiệm vụ {task_counter}. {task['task_name']}**"
                 try:
                     formatted_due_date = datetime.fromisoformat(task['due_date']).astimezone(local_tz).strftime('%d/%m/%Y, %H:%M')
                 except (ValueError, TypeError):
@@ -781,14 +781,19 @@ else:
 
                 if is_completed:
                     completer_info = task.get('completer')
-                    completer_name = completer_info.get('full_name') if completer_info else None
-                    if completer_name:
-                        if task.get('completed_by_manager_id') == user.id:
-                            st.success(f"✓ Công việc này đã được **bạn** xác nhận hoàn thành và đã bị khóa đối với nhân viên.")
-                        else:
-                            st.success(f"✓ Công việc này đã được quản lý **{completer_name}** xác nhận hoàn thành và đã bị khóa.")
-                    else:
-                        st.success("✓ Công việc này đã được xác nhận hoàn thành và đã bị khóa đối với nhân viên.")
+                    # Cung cấp một tên dự phòng nếu không tìm thấy tên người xác nhận
+                    completer_name = completer_info.get('full_name') if completer_info else "một quản lý"
+
+                    # Tạo thông báo luôn hiển thị tên
+                    message = f"✓ Công việc này đã được quản lý **{completer_name}**"
+
+                    # Thêm ghi chú "(bạn)" nếu người xác nhận là người dùng hiện tại
+                    if task.get('completed_by_manager_id') == user.id:
+                        message += " (bạn)"
+
+                    message += " xác nhận hoàn thành và đã bị khóa đối với nhân viên."
+                    
+                    st.success(message)
                 elif is_overdue and task.get('status') != 'Done':
                     st.markdown("<span style='color: red;'><b>Lưu ý: Nhiệm vụ đã quá hạn hoặc đã làm xong nhưng nhân viên chưa chuyển trạng thái Done</b></span>", unsafe_allow_html=True)
 
