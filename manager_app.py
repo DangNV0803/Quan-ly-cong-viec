@@ -180,6 +180,36 @@ def fetch_read_statuses(_supabase_client: Client, user_id: str):
         st.error(f"Lỗi khi tải trạng thái đã đọc: {e}")
         return {}
 
+# Hàm fetch mới, chỉ tải dữ liệu khi được gọi với bộ lọc cụ thể
+@st.cache_data(ttl=60)
+def fetch_filtered_tasks_and_details(_client: Client, filter_by_column: str, filter_value_id: str):
+    """Fetches tasks filtered by a specific criterion (project_id or assigned_to)."""
+    try:
+        # Truy vấn cơ bản
+        query = _client.table('tasks').select('*, projects(project_name, old_project_ref_id), completer:completed_by_manager_id(full_name), manager_rating, manager_review')
+        
+        # Áp dụng bộ lọc
+        query = query.eq(filter_by_column, filter_value_id)
+        
+        # Thực thi truy vấn
+        tasks_res = query.order('created_at', desc=True).execute()
+        tasks = tasks_res.data if tasks_res.data else []
+
+        # Lấy danh sách profiles để map tên (tận dụng cache)
+        profiles = fetch_all_profiles(_client)
+        profile_map = {p['id']: p.get('full_name', 'N/A') for p in (profiles or [])}
+
+        # Gắn tên người thực hiện và người tạo vào mỗi task
+        for task in tasks:
+            task['assignee_name'] = profile_map.get(task.get('assigned_to'))
+            task['creator_name'] = profile_map.get(task.get('created_by'))
+            if task.get('projects'):
+                task['project_name'] = task.get('projects', {}).get('project_name')
+        return tasks
+    except Exception as e:
+        st.error(f"Lỗi khi tải danh sách công việc: {e}")
+        return []
+    
 def mark_task_as_read(_supabase_client: Client, task_id: int, user_id: str):
     """Upserts the last read time for a user and a task using current UTC time."""
     try:
@@ -237,7 +267,7 @@ def add_comment(task_id: int, user_id: str, content: str, uploaded_file=None):
         # Dùng client 'supabase_new' cho manager
         supabase_new.table('comments').insert(insert_data).execute()
         # st.cache_data.clear()
-        st.toast("Đã gửi bình luận!", icon="💬")
+        st.toast("Đã gửi bình luận! Danh sách thảo luận sẽ được làm mới ngay.", icon="💬")
     except Exception as e:
         st.error(f"Lỗi khi thêm bình luận: {e}")
         
@@ -258,7 +288,7 @@ def update_account_status(user_id: str, new_status: str):
         supabase_new.table('profiles').update({'account_status': new_status}).eq('id', user_id).execute()
         
         st.cache_data.clear()
-        st.toast(f"Đã {'vô hiệu hóa' if new_status == 'inactive' else 'kích hoạt'} tài khoản thành công!", icon="✅")
+        st.success(f"Đã {'vô hiệu hóa' if new_status == 'inactive' else 'kích hoạt'} tài khoản. Đang làm mới danh sách...", icon="🔄")
         st.rerun()
 
     except Exception as e:
@@ -281,10 +311,45 @@ def update_task_details(task_id: int, updates: dict):
     """Cập nhật các trường cụ thể cho một công việc."""
     try:
         supabase_new.table('tasks').update(updates).eq('id', task_id).execute()
-        st.cache_data.clear()
-        st.toast("Cập nhật công việc thành công!", icon="✅")
+        # TỐI ƯU: Chỉ xóa cache của hàm lấy danh sách công việc, không xóa toàn bộ
+        fetch_filtered_tasks_and_details.clear()
+        # Sử dụng thông báo chi tiết hơn
+        st.toast("Đã lưu thay đổi! Giao diện sẽ được cập nhật trong giây lát.", icon="💾")
     except Exception as e:
         st.error(f"Lỗi khi cập nhật công việc: {e}")
+
+def handle_completion_toggle(task_id: int, user_id: str):
+    """
+    Callback được gọi khi người dùng tick vào nút 'Xác nhận hoàn thành'.
+    Hàm này sẽ đọc trạng thái mới của nút và cập nhật CSDL.
+    """
+    # Lấy trạng thái mới của nút toggle từ st.session_state
+    new_status = st.session_state[f'complete_toggle_{task_id}']
+    
+    updates = {
+        'is_completed_by_manager': new_status,
+        'completed_by_manager_id': user_id if new_status else None
+    }
+    
+    # Đặt mục tiêu cuộn trang để giữ nguyên vị trí xem
+    st.session_state['scroll_to_task'] = task_id
+    
+    # Gọi hàm cập nhật đã được tối ưu
+    update_task_details(task_id, updates)
+
+def handle_status_change(task_id: int):
+    """
+    Callback được gọi khi người dùng thay đổi trạng thái công việc.
+    Hàm này sẽ đọc trạng thái mới của selectbox từ st.session_state và cập nhật CSDL.
+    """
+    # Lấy trạng thái mới từ st.session_state bằng key của selectbox
+    new_status = st.session_state[f'status_mgr_{task_id}']
+    
+    # Đặt mục tiêu cuộn trang để giữ nguyên vị trí xem sau khi cập nhật
+    st.session_state['scroll_to_task'] = task_id
+    
+    # Gọi hàm cập nhật đã được tối ưu
+    update_task_details(task_id, {'status': new_status})
 
 def update_task_assignee(task_id: int, new_assignee_id: str):
     """Updates the assignee for a specific task."""
@@ -425,6 +490,8 @@ if 'manager_profile' not in st.session_state:
     st.session_state.manager_profile = None
 if 'edit_toggle_states' not in st.session_state:
     st.session_state.edit_toggle_states = defaultdict(bool)
+if 'tasks_to_display' not in st.session_state:
+    st.session_state.tasks_to_display = [] # Khởi tạo danh sách công việc cần hiển thị là rỗng
 
 # --- Login UI ---
 if st.session_state.user is None:
@@ -522,7 +589,12 @@ else:
         "⚙️ Cài đặt Tài khoản"
     ])
 
+    # ==============================================================================
+    # BẮT ĐẦU: MÃ NGUỒN THAY THẾ CHO `with tab_tasks:`
+    # SAO CHÉP TỪ ĐÂY
+    # ==============================================================================
     with tab_tasks:
+        # --- PHẦN 1: GIAO VIỆC MỚI (GIỮ NGUYÊN NHƯ CŨ) ---
         st.header("✍️ Giao việc mới")
         if not projects_data_old:
             st.warning("Cần có dữ liệu dự án từ hệ thống cũ để có thể giao việc.")
@@ -571,447 +643,344 @@ else:
 
         st.markdown("---")
         st.header("📊 Danh sách công việc đã giao")
-        st.markdown("""
-        <style>
-        .color-box {
-            width: 15px;
-            height: 15px;
-            display: inline-block;
-            border: 1px solid #ccc;
-            vertical-align: middle;
-            margin-right: 5px;
-        }
-        </style>
-        <b>Chú thích Deadline:</b>
-        <span class="color-box" style="background-color: #ffebee;"></span> < 3 ngày
-        <span class="color-box" style="background-color: #fff3e0;"></span> 3-7 ngày
-        <span class="color-box" style="background-color: #fffde7;"></span> 7-15 ngày
-        <span class="color-box" style="background-color: #e8f5e9;"></span> > 15 ngày
-        """, unsafe_allow_html=True)
-        st.text("") 
 
-        group_by = st.radio(
-            "Nhóm công việc theo:",
-            ('Dự án', 'Nhân viên'),
-            horizontal=True,
-            key="manager_grouping", # Đặt một key cố định
-            on_change=reset_filter_callback # Gọi hàm reset khi thay đổi
-        )
+        # --- PHẦN 2: BỘ LỌC TẢI DỮ LIỆU THEO YÊU CẦU ---
 
-        if not all_tasks:
-            st.info("Chưa có công việc nào được giao trong hệ thống.")
+        # Form chứa các bộ lọc
+        with st.form("filter_form"):
+            st.write("**Chọn tiêu chí để tải và hiển thị danh sách công việc:**")
+            
+            filter_type = st.radio(
+                "Lọc theo:",
+                ('Dự án', 'Nhân viên'),
+                horizontal=True,
+                key="manager_filter_type"
+            )
+            
+            filter_options = {}
+            filter_column = ''
+            if filter_type == 'Dự án':
+                # all_projects_new đã được fetch từ trước
+                if all_projects_new:
+                    # Sắp xếp dự án theo tên để dễ tìm
+                    sorted_projects = sorted(all_projects_new, key=lambda p: p['project_name'])
+                    filter_options = {p['project_name']: p['id'] for p in sorted_projects}
+                label = "Chọn Dự án"
+                filter_column = 'project_id'
+            else: # Lọc theo Nhân viên
+                # active_employees đã được fetch từ trước
+                if active_employees:
+                    # Sắp xếp nhân viên theo tên
+                    sorted_employees = sorted(active_employees, key=lambda e: e['full_name'])
+                    filter_options = {f"{e['full_name']} ({e['email']})": e['id'] for e in sorted_employees}
+                label = "Chọn Nhân viên"
+                filter_column = 'assigned_to'
+
+            selected_option_key = st.selectbox(label, options=list(filter_options.keys()), placeholder="-- Vui lòng chọn một mục --")
+            
+            apply_filter_button = st.form_submit_button("🔍 Lọc và Hiển thị Công việc", use_container_width=True, type="primary", disabled=is_expired)
+
+            if apply_filter_button and selected_option_key and not is_expired:
+                filter_id = filter_options[selected_option_key]
+                with st.spinner(f"Đang tải công việc cho '{selected_option_key}'..."):
+                    filtered_tasks = fetch_filtered_tasks_and_details(supabase_new, filter_column, filter_id)
+                    st.session_state.tasks_to_display = filtered_tasks
+                    # Xóa cache liên quan để đảm bảo dữ liệu mới nhất
+                    fetch_comments.clear() 
+                    fetch_read_statuses.clear()
+                    # Sau khi có dữ liệu mới, ta rerun để hiển thị
+                    st.rerun()
+            elif apply_filter_button:
+                st.warning("Vui lòng chọn một mục cụ thể để lọc.")
+
+        st.divider()
+
+        # --- PHẦN 3: HIỂN THỊ DANH SÁCH CÔNG VIỆC ĐÃ LỌC ---
+        # Chỉ hiển thị phần này khi st.session_state.tasks_to_display có dữ liệu
+        if 'tasks_to_display' not in st.session_state or not st.session_state.tasks_to_display:
+            st.info("Hãy chọn một bộ lọc ở trên và nhấn nút 'Lọc và Hiển thị' để xem danh sách công việc.")
         else:
+            # Chú thích deadline (giữ nguyên)
+            st.markdown("""
+            <style>
+            .color-box { width: 15px; height: 15px; display: inline-block; border: 1px solid #ccc; vertical-align: middle; margin-right: 5px; }
+            </style>
+            <b>Chú thích Deadline:</b>
+            <span class="color-box" style="background-color: #ffebee;"></span> < 3 ngày
+            <span class="color-box" style="background-color: #fff3e0;"></span> 3-7 ngày
+            <span class="color-box" style="background-color: #fffde7;"></span> 7-15 ngày
+            <span class="color-box" style="background-color: #e8f5e9;"></span> > 15 ngày
+            """, unsafe_allow_html=True)
+            st.text("") 
+
             local_tz = ZoneInfo("Asia/Ho_Chi_Minh")
             read_statuses = fetch_read_statuses(supabase_new, user.id) 
             
-            # --- Bước 1: Nhóm các công việc lại như cũ ---
-            grouped_tasks = defaultdict(list)
-            if group_by == 'Dự án':
-                for task in all_tasks:
-                    project_info = task.get('projects')
-                    key = (project_info.get('project_name', 'Dự án không tên'), project_info.get('old_project_ref_id')) if project_info else ('Không thuộc dự án cụ thể', None)
-                    grouped_tasks[key].append(task)
-            else: # Nhóm theo Nhân viên
-                for task in all_tasks:
-                    grouped_tasks[task.get('assignee_name', 'Chưa giao cho ai')].append(task)
-
-            # --- Bước 2: Tạo hộp tìm kiếm/chọn lựa ---
-            group_keys = sorted(grouped_tasks.keys(), key=str)
+            # Sắp xếp công việc theo deadline tăng dần
+            sorted_tasks = sorted(st.session_state.tasks_to_display, key=lambda t: (t.get('due_date') is None, t.get('due_date')))
             
-            if group_by == 'Dự án':
-                # Định dạng lại tên hiển thị cho các dự án
-                options_map = {f"{name} (Mã: {code})" if code else name: key for key, (name, code) in zip(group_keys, group_keys)}
-                label = "🔍 Tìm và nhảy đến Dự án"
-            else: # Nhóm theo Nhân viên
-                # Tên nhân viên là key
-                options_map = {key: key for key in group_keys}
-                label = "🔍 Tìm và nhảy đến Nhân viên"
+            # Hiển thị thông tin bộ lọc hiện tại
+            total_tasks_found = len(sorted_tasks)
+            st.success(f"Tìm thấy **{total_tasks_found}** công việc khớp với bộ lọc của bạn.")
+
+            task_counter = 0
+            for task in sorted_tasks:
+                # --- Đây là toàn bộ code hiển thị chi tiết mỗi công việc của bạn ---
+                task_counter += 1
+                comments = fetch_comments(task['id'])
                 
-            # Thêm lựa chọn "Hiển thị tất cả" vào đầu danh sách
-            options_list = ["--- Hiển thị tất cả ---"] + list(options_map.keys())
-            
-            selected_option = st.selectbox(label, options=options_list, key="manager_filter")
-            st.divider()
+                status_icon = ""
+                has_new_message = False
+                last_read_time_utc = read_statuses.get(task['id'], datetime.fromtimestamp(0, tz=timezone.utc))
+                last_event_time_utc = datetime.fromisoformat(task['created_at']).astimezone(timezone.utc)
+                if comments:
+                    last_comment_time_utc = datetime.fromisoformat(comments[0]['created_at']).astimezone(timezone.utc)
+                    if last_comment_time_utc > last_event_time_utc:
+                        last_event_time_utc = last_comment_time_utc
+                if comments and comments[0]['user_id'] == user.id:
+                    status_icon = "✅ Đã trả lời"
+                elif last_event_time_utc > last_read_time_utc:
+                    status_icon = "💬 Mới!"
+                    has_new_message = True
+                elif comments:
+                    status_icon = "✔️ Đã xem"
 
-            # --- Bước 3: Lọc dữ liệu dựa trên lựa chọn của người dùng ---
-            if selected_option and selected_option != "--- Hiển thị tất cả ---":
-                selected_key = options_map[selected_option]
-                tasks_to_display = {selected_key: grouped_tasks[selected_key]}
-            else:
-                # Nếu không chọn gì hoặc chọn "Hiển thị tất cả" thì giữ nguyên
-                tasks_to_display = grouped_tasks
-
-            # --- Bước 4: Hiển thị danh sách công việc đã được lọc ---
-            sorted_grouped_tasks = sorted(tasks_to_display.items(), key=lambda item: str(item[0]))
-
-            if not sorted_grouped_tasks:
-                st.info("Không tìm thấy kết quả phù hợp.")
-                
-            for key, tasks_in_group in sorted_grouped_tasks:
-                if group_by == 'Dự án':
-                    project_name, project_code = key
-                    display_title = f"Dự án: {project_name}" + (f" (Mã: {project_code})" if project_code else "")
-                else:
-                    display_title = f"Nhân viên: {key}"
-                st.subheader(display_title)
-                
-                # Sắp xếp theo deadline tăng dần, nhiệm vụ không có deadline sẽ xuống cuối
-                sorted_tasks = sorted(tasks_in_group, key=lambda t: (t.get('due_date') is None, t.get('due_date')))
-                task_counter = 0
-
-                for task in sorted_tasks:
-                    # --- Phần code hiển thị chi tiết mỗi công việc (giữ nguyên như cũ) ---
-                    task_counter += 1
-                    comments = fetch_comments(task['id'])
-                    
-                    status_icon = ""
-                    has_new_message = False
-                    last_read_time_utc = read_statuses.get(task['id'], datetime.fromtimestamp(0, tz=timezone.utc))
-                    last_event_time_utc = datetime.fromisoformat(task['created_at']).astimezone(timezone.utc)
-                    if comments:
-                        last_comment_time_utc = datetime.fromisoformat(comments[0]['created_at']).astimezone(timezone.utc)
-                        if last_comment_time_utc > last_event_time_utc:
-                            last_event_time_utc = last_comment_time_utc
-                    if comments and comments[0]['user_id'] == user.id:
-                        status_icon = "✅ Đã trả lời"
-                    elif last_event_time_utc > last_read_time_utc:
-                        status_icon = "💬 Mới!"
-                        has_new_message = True
-                    elif comments:
-                        status_icon = "✔️ Đã xem"
-
-                    is_overdue = False
-                    if task.get('due_date'):
-                        try:
-                            due_date = datetime.fromisoformat(task['due_date']).astimezone(local_tz)
-                            if due_date < datetime.now(local_tz):
-                                is_overdue = True
-                        except (ValueError, TypeError):
-                            is_overdue = False
-
-                    line_1 = f"**Task {task_counter}. {task['task_name']}**"
+                is_overdue = False
+                if task.get('due_date'):
                     try:
-                        formatted_due_date = datetime.fromisoformat(task['due_date']).astimezone(local_tz).strftime('%d/%m/%Y, %H:%M')
+                        due_date = datetime.fromisoformat(task['due_date']).astimezone(local_tz)
+                        if due_date < datetime.now(local_tz):
+                            is_overdue = True
                     except (ValueError, TypeError):
-                        formatted_due_date = 'N/A'
-                    
-                    line_2_parts = [status_icon, f"Trạng thái thực hiện: *{task['status']}*"]
-                    if group_by == 'Dự án':
-                        line_2_parts.append(f"Người thực hiện: *{task.get('assignee_name', 'N/A')}*")
-                    else:
-                        project_name_display = task.get('projects', {}).get('project_name', 'N/A')
-                        line_2_parts.append(f"Dự án: *_{project_name_display}_*")
-                    
-                    line_2_parts.append(f"Deadline: *{formatted_due_date}*")
-                    line_2 = " | ".join(filter(None, line_2_parts))
+                        is_overdue = False
 
-                    deadline_color = get_deadline_color(task.get('due_date'))
-                    #Tạo mỏ neo
-                    # Đúng: Neo đặt trước, sau đó mới mở container
-                    st.markdown(f'<div id="task-anchor-{task["id"]}" style="height: 60px; margin-top: -60px; position: absolute; visibility: hidden;"></div>', unsafe_allow_html=True)
+                line_1 = f"**Task {task_counter}. {task['task_name']}**"
+                try:
+                    formatted_due_date = datetime.fromisoformat(task['due_date']).astimezone(local_tz).strftime('%d/%m/%Y, %H:%M')
+                except (ValueError, TypeError):
+                    formatted_due_date = 'N/A'
+                
+                line_2_parts = [status_icon, f"Trạng thái thực hiện: *{task['status']}*"]
+                # Vì đã lọc nên thông tin nhóm (dự án/nhân viên) có thể không cần hiển thị lại ở đây, nhưng vẫn giữ để code không lỗi
+                if filter_type == 'Dự án':
+                    line_2_parts.append(f"Người thực hiện: *{task.get('assignee_name', 'N/A')}*")
+                else: # Lọc theo nhân viên
+                    project_name_display = task.get('projects', {}).get('project_name', 'N/A')
+                    line_2_parts.append(f"Dự án: *_{project_name_display}_*")
 
-                    # Sau đó mới hiển thị container
-                    st.markdown(f'<div style="background-color: {deadline_color}; border-radius: 7px; padding: 10px; margin-bottom: 10px;">', unsafe_allow_html=True)
-                             
-                    
-                    st.markdown(f"<span style='color: blue;'>{line_1}</span>", unsafe_allow_html=True)
-                    st.markdown(line_2)
+                line_2_parts.append(f"Deadline: *{formatted_due_date}*")
+                line_2 = " | ".join(filter(None, line_2_parts))
 
-                    # Lấy trạng thái công việc đã được khóa hay chưa
-                    is_completed = task.get('is_completed_by_manager', False)
+                deadline_color = get_deadline_color(task.get('due_date'))
+                st.markdown(f'<div id="task-anchor-{task["id"]}" style="height: 60px; margin-top: -60px; position: absolute; visibility: hidden;"></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="background-color: {deadline_color}; border-radius: 7px; padding: 10px; margin-bottom: 10px;">', unsafe_allow_html=True)
+                st.markdown(f"<span style='color: blue;'>{line_1}</span>", unsafe_allow_html=True)
+                st.markdown(line_2)
 
-                    # Ưu tiên hiển thị thông báo "Đã khóa" nếu có
-                    if is_completed:
-                        # Lấy thông tin người xác nhận từ dữ liệu task
-                        completer_info = task.get('completer')
-                        completer_name = completer_info.get('full_name') if completer_info else None
+                is_completed = task.get('is_completed_by_manager', False)
 
-                        # Kiểm tra xem có tên người xác nhận không
-                        if completer_name:
-                            # Nếu người xác nhận là chính bạn đang đăng nhập
-                            if task.get('completed_by_manager_id') == user.id:
-                                st.success(f"✓ Công việc này đã được **bạn** xác nhận hoàn thành và đã bị khóa đối với nhân viên.")
-                            # Nếu là một quản lý khác
-                            else:
-                                st.success(f"✓ Công việc này đã được quản lý **{completer_name}** xác nhận hoàn thành và đã bị khóa.")
+                if is_completed:
+                    completer_info = task.get('completer')
+                    completer_name = completer_info.get('full_name') if completer_info else None
+                    if completer_name:
+                        if task.get('completed_by_manager_id') == user.id:
+                            st.success(f"✓ Công việc này đã được **bạn** xác nhận hoàn thành và đã bị khóa đối với nhân viên.")
                         else:
-                            # Dự phòng cho các dữ liệu cũ chưa có thông tin người xác nhận
-                            st.success("✓ Công việc này đã được xác nhận hoàn thành và đã bị khóa đối với nhân viên.")
-                    # Nếu chưa khóa, mới kiểm tra và hiển thị cảnh báo "Quá hạn"
-                    elif is_overdue and task.get('status') != 'Done':
-                        st.markdown("<span style='color: red;'><b>Lưu ý: Nhiệm vụ đã quá hạn hoặc đã làm xong nhưng nhân viên chưa chuyển trạng thái Done</b></span>", unsafe_allow_html=True)
+                            st.success(f"✓ Công việc này đã được quản lý **{completer_name}** xác nhận hoàn thành và đã bị khóa.")
+                    else:
+                        st.success("✓ Công việc này đã được xác nhận hoàn thành và đã bị khóa đối với nhân viên.")
+                elif is_overdue and task.get('status') != 'Done':
+                    st.markdown("<span style='color: red;'><b>Lưu ý: Nhiệm vụ đã quá hạn hoặc đã làm xong nhưng nhân viên chưa chuyển trạng thái Done</b></span>", unsafe_allow_html=True)
 
-                    with st.expander("Chi tiết & Thảo luận"):
-                        # Tạo công tắc để quản lý thay đổi trạng thái
-                        new_completed_status = st.toggle(
-                            "**Xác nhận hoàn thành & Khóa công việc**", 
-                            value=is_completed, 
-                            key=f"complete_toggle_{task['id']}",
-                            help="Khi được bật, nhân viên sẽ không thể bình luận, đính kèm file hay thay đổi trạng thái của công việc này nữa.",
-                            disabled=is_expired
-                        )
-                        
-                        # Nếu có sự thay đổi trạng thái từ công tắc
-                        if new_completed_status != is_completed and not is_expired:
-                            # Tạo một dictionary chứa các cập nhật
-                            # Nếu bật công tắc, lưu ID của bạn. Nếu tắt, đặt lại là None (NULL)
-                            updates = {
-                                'is_completed_by_manager': new_completed_status,
-                                'completed_by_manager_id': user.id if new_completed_status else None
-                            }
-                            # Gọi hàm cập nhật với dữ liệu mới
-                            st.session_state['scroll_to_task'] = task['id']  # Đặt trước 
-                            update_task_details(task['id'], updates)  # Sau đó mới cập nhật
-                            st.rerun()  # Biến scroll_to_task đã được lưu vào session state
-                        
-                        if has_new_message:
-                            if st.button("✔️ Đánh dấu đã đọc", key=f"read_mgr_{task['id']}", help="Bấm vào đây để xác nhận bạn đã xem tin nhắn mới nhất.", disabled=is_expired) and not is_expired:
-                                mark_task_as_read(supabase_new, task['id'], user.id)
-                                fetch_read_statuses.clear()
-                                st.rerun()
-                            st.divider()
-                        
-                        # --- BẮT ĐẦU: CODE MỚI ---
+                with st.expander("Chi tiết & Thảo luận"):
+                    st.toggle(
+                        "**Xác nhận hoàn thành & Khóa công việc**",
+                        value=is_completed,
+                        key=f"complete_toggle_{task['id']}",
+                        help="Khi được bật, nhân viên sẽ không thể bình luận, đính kèm file hay thay đổi trạng thái của công việc này nữa.",
+                        disabled=is_expired,
+                        on_change=handle_completion_toggle,  # Sử dụng callback
+                        args=(task['id'], user.id)           # Truyền tham số cho callback
+                    )
+                    
+                    if has_new_message:
+                        if st.button("✔️ Đánh dấu đã đọc", key=f"read_mgr_{task['id']}", help="Bấm vào đây để xác nhận bạn đã xem tin nhắn mới nhất.", disabled=is_expired) and not is_expired:
+                            mark_task_as_read(supabase_new, task['id'], user.id)
+                            fetch_read_statuses.clear()
+                            st.rerun()
                         st.divider()
+                    
+                    st.divider()
 
-                        # Phần 1: Cho phép quản lý thay đổi trạng thái công việc
-                        st.markdown("##### **Trạng thái & Đánh giá**")
-                        col_status, col_rating = st.columns(2)
+                    st.markdown("##### **Trạng thái & Đánh giá**")
+                    col_status, col_rating = st.columns(2)
 
-                        with col_status:
-                            status_options = ['To Do', 'In Progress', 'Done']
-                            try:
-                                current_status_index = status_options.index(task['status'])
-                            except ValueError:
-                                current_status_index = 0 # Mặc định là 'To Do' nếu trạng thái không hợp lệ
+                    with col_status:
+                        status_options = ['To Do', 'In Progress', 'Done']
+                        try:
+                            current_status_index = status_options.index(task['status'])
+                        except ValueError:
+                            current_status_index = 0
 
-                            new_status = st.selectbox(
-                                "Cập nhật trạng thái:",
-                                options=status_options,
-                                index=current_status_index,
-                                key=f"status_mgr_{task['id']}",
+                        # Sử dụng on_change để xử lý cập nhật một cách an toàn
+                        st.selectbox(
+                            "Cập nhật trạng thái:",
+                            options=status_options,
+                            index=current_status_index,
+                            key=f"status_mgr_{task['id']}",
+                            disabled=is_expired,
+                            on_change=handle_status_change,  # Sử dụng callback
+                            args=(task['id'],)               # Truyền task_id cho callback
+                        )
+
+                    if is_completed:
+                        with col_rating:
+                            current_rating = task.get('manager_rating', 0)
+                            stars = "⭐" * current_rating + "☆" * (5 - current_rating)
+                            st.markdown(f"**Đánh giá:** {stars}")
+
+                        with st.form(key=f"review_form_{task['id']}", clear_on_submit=False):
+                            st.markdown("**Cập nhật đánh giá của bạn:**")
+                            new_rating = st.number_input(
+                                "Số sao (1-5)", min_value=1, max_value=5, 
+                                value=current_rating or 3, step=1, key=f"rating_input_{task['id']}",
                                 disabled=is_expired
                             )
-                            if new_status != task['status'] and not is_expired:
+                            new_review = st.text_area(
+                                "Nhận xét chi tiết (tùy chọn):", value=task.get('manager_review', ''), 
+                                key=f"review_input_{task['id']}", disabled=is_expired
+                            )
+                            submitted_review = st.form_submit_button("Lưu đánh giá", use_container_width=True, type="primary", disabled=is_expired)
+                            if submitted_review and not is_expired:
+                                review_updates = {'manager_rating': new_rating, 'manager_review': new_review}
                                 st.session_state['scroll_to_task'] = task['id']
-                                update_task_details(task['id'], {'status': new_status})
-                                
+                                update_task_details(task['id'], review_updates)
+                                st.toast("Đã lưu đánh giá của bạn!", icon="⭐") 
+                                # st.rerun()
+                    
+                    edit_mode = st.session_state.edit_toggle_states.get(task['id'], False)
+                    st.toggle(
+                        "✏️ Chỉnh sửa công việc", value=edit_mode, key=f"edit_toggle_{task['id']}",
+                        on_change=handle_toggle_change, args=(task['id'],), disabled=is_expired
+                    )
 
-                        # Phần 2: Hiển thị đánh giá và form nhập nếu công việc đã khóa
-                        if is_completed:
-                            with col_rating:
-                                # Lấy đánh giá hiện tại
-                                current_rating = task.get('manager_rating', 0)
-                                current_review = task.get('manager_review', '')
-
-                                # Hiển thị sao
-                                stars = "⭐" * current_rating + "☆" * (5 - current_rating)
-                                st.markdown(f"**Đánh giá:** {stars}")
-
-                            # Form để cập nhật đánh giá (sao và review)
-                            with st.form(key=f"review_form_{task['id']}", clear_on_submit=False):
-                                st.markdown("**Cập nhật đánh giá của bạn:**")
-                                
-                                # Nhập số sao
-                                new_rating = st.number_input(
-                                    "Số sao (1-5)", 
-                                    min_value=1, max_value=5, 
-                                    value=current_rating or 3, # Mặc định là 3 nếu chưa có
-                                    step=1, 
-                                    key=f"rating_input_{task['id']}",
-                                    disabled=is_expired
-                                )
-                                
-                                # Nhập review
-                                new_review = st.text_area(
-                                    "Nhận xét chi tiết (tùy chọn):", 
-                                    value=current_review, 
-                                    key=f"review_input_{task['id']}",
-                                    disabled=is_expired
-                                )
-
-                                submitted_review = st.form_submit_button("Lưu đánh giá", use_container_width=True, type="primary", disabled=is_expired)
-                                if submitted_review and not is_expired:
-                                    review_updates = {
-                                        'manager_rating': new_rating,
-                                        'manager_review': new_review
-                                    }
+                    if edit_mode:
+                        with st.form(key=f"edit_form_{task['id']}", clear_on_submit=True):
+                            # ... (Copy y hệt phần form chỉnh sửa từ code gốc của bạn vào đây)
+                            st.markdown("##### **📝 Cập nhật thông tin công việc**")
+                            new_task_name = st.text_input("Tên công việc", value=task.get('task_name', ''))
+                            project_options_map_edit = {p['project_name']: p['id'] for p in all_projects_new} if all_projects_new else {}
+                            project_names = list(project_options_map_edit.keys())
+                            employee_options_map = {e['full_name']: e['id'] for e in active_employees}
+                            employee_names = list(employee_options_map.keys())
+                            priorities = ['Low', 'Medium', 'High']
+                            current_project_name = task.get('projects', {}).get('project_name')
+                            try:
+                                default_proj_index = project_names.index(current_project_name) if current_project_name else 0
+                            except ValueError: default_proj_index = 0
+                            current_assignee_name = task.get('assignee_name')
+                            try:
+                                default_employee_index = employee_names.index(current_assignee_name) if current_assignee_name in employee_names else 0
+                            except ValueError: default_employee_index = 0
+                            try:
+                                default_prio_index = priorities.index(task.get('priority')) if task.get('priority') else 1
+                            except ValueError: default_prio_index = 1
+                            try:
+                                current_due_datetime = datetime.fromisoformat(task['due_date']).astimezone(local_tz)
+                            except (ValueError, TypeError): current_due_datetime = datetime.now(local_tz)
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                new_project_name = st.selectbox("Dự án", options=project_names, index=default_proj_index, key=f"proj_edit_{task['id']}")
+                            with col2:
+                                new_assignee_name = st.selectbox("Giao cho nhân viên", options=employee_names, index=default_employee_index, key=f"assignee_edit_{task['id']}")
+                            col3, col4, col5 = st.columns(3)
+                            with col3:
+                                new_priority = st.selectbox("Độ ưu tiên", options=priorities, index=default_prio_index, key=f"prio_edit_{task['id']}")
+                            with col4:
+                                new_due_date = st.date_input("Hạn chót (ngày)", value=current_due_datetime.date(), key=f"date_edit_{task['id']}")
+                            with col5:
+                                new_due_time = st.time_input("Hạn chót (giờ)", value=current_due_datetime.time(), key=f"time_edit_{task['id']}")
+                            new_description = st.text_area("Mô tả chi tiết", value=task.get('description', ''), key=f"desc_edit_{task['id']}", height=150)
+                            submitted_edit = st.form_submit_button("💾 Lưu thay đổi", use_container_width=True, type="primary",disabled=is_expired)
+                            if submitted_edit and not is_expired:
+                                updates_dict = {}
+                                if new_task_name and new_task_name != task.get('task_name'): updates_dict['task_name'] = new_task_name
+                                selected_project_id = project_options_map_edit.get(new_project_name)
+                                if selected_project_id and selected_project_id != task.get('project_id'): updates_dict['project_id'] = selected_project_id
+                                selected_employee_id = employee_options_map.get(new_assignee_name)
+                                if selected_employee_id and selected_employee_id != task.get('assigned_to'): updates_dict['assigned_to'] = selected_employee_id
+                                if new_priority != task.get('priority'): updates_dict['priority'] = new_priority
+                                naive_deadline = datetime.combine(new_due_date, new_due_time)
+                                aware_deadline = naive_deadline.replace(tzinfo=local_tz)
+                                if new_description != task.get('description', ''): updates_dict['description'] = new_description
+                                if aware_deadline.isoformat() != task.get('due_date'): updates_dict['due_date'] = aware_deadline.isoformat()
+                                if updates_dict:
                                     st.session_state['scroll_to_task'] = task['id']
-                                    update_task_details(task['id'], review_updates)
-                                    
-                        # --- KẾT THÚC: CODE MỚI ---
-                                                
-                        # Lấy trạng thái của nút gạt từ "bộ nhớ"
-                        edit_mode = st.session_state.edit_toggle_states.get(task['id'], False)
-
-                        # Nút gạt giờ sẽ có on_change để gọi hàm callback
-                        st.toggle(
-                            "✏️ Chỉnh sửa công việc", 
-                            value=edit_mode, # Giá trị được lấy từ bộ nhớ
-                            key=f"edit_toggle_{task['id']}",
-                            on_change=handle_toggle_change, # Gọi hàm xử lý khi có thay đổi
-                            args=(task['id'],), # Truyền ID của công việc vào hàm
-                            disabled=is_expired
-                        )
-
-                        # Hiển thị form nếu nút gạt đang ở trạng thái Bật (True)
-                        if edit_mode:
-                            with st.form(key=f"edit_form_{task['id']}", clear_on_submit=True):
-                                st.markdown("##### **📝 Cập nhật thông tin công việc**")
-                                new_task_name = st.text_input("Tên công việc", value=task.get('task_name', ''))
-                                project_options_map_edit = {p['project_name']: p['id'] for p in all_projects_new} if all_projects_new else {}
-                                project_names = list(project_options_map_edit.keys())
-                                employee_options_map = {e['full_name']: e['id'] for e in active_employees}
-                                employee_names = list(employee_options_map.keys())
-                                priorities = ['Low', 'Medium', 'High']
-                                current_project_name = task.get('projects', {}).get('project_name')
-                                try:
-                                    default_proj_index = project_names.index(current_project_name) if current_project_name else 0
-                                except ValueError:
-                                    default_proj_index = 0
-                                current_assignee_name = task.get('assignee_name')
-                                try:
-                                    default_employee_index = employee_names.index(current_assignee_name) if current_assignee_name in employee_names else 0
-                                except ValueError:
-                                    default_employee_index = 0
-                                try:
-                                    default_prio_index = priorities.index(task.get('priority')) if task.get('priority') else 1
-                                except ValueError:
-                                    default_prio_index = 1
-                                try:
-                                    current_due_datetime = datetime.fromisoformat(task['due_date']).astimezone(local_tz)
-                                except (ValueError, TypeError):
-                                    current_due_datetime = datetime.now(local_tz)
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    new_project_name = st.selectbox("Dự án", options=project_names, index=default_proj_index, key=f"proj_edit_{task['id']}")
-                                with col2:
-                                    new_assignee_name = st.selectbox("Giao cho nhân viên", options=employee_names, index=default_employee_index, key=f"assignee_edit_{task['id']}")
-                                col3, col4, col5 = st.columns(3)
-                                with col3:
-                                    new_priority = st.selectbox("Độ ưu tiên", options=priorities, index=default_prio_index, key=f"prio_edit_{task['id']}")
-                                with col4:
-                                    new_due_date = st.date_input("Hạn chót (ngày)", value=current_due_datetime.date(), key=f"date_edit_{task['id']}")
-                                with col5:
-                                    new_due_time = st.time_input("Hạn chót (giờ)", value=current_due_datetime.time(), key=f"time_edit_{task['id']}")
-                                new_description = st.text_area(
-                                    "Mô tả chi tiết", 
-                                    value=task.get('description', ''), 
-                                    key=f"desc_edit_{task['id']}",
-                                    height=150
-                                )
-                                submitted_edit = st.form_submit_button("💾 Lưu thay đổi", use_container_width=True, type="primary",disabled=is_expired)
-                                if submitted_edit and not is_expired:
-                                    updates_dict = {}
-                                    if new_task_name and new_task_name != task.get('task_name'):
-                                        updates_dict['task_name'] = new_task_name
-                                    selected_project_id = project_options_map_edit.get(new_project_name)
-                                    if selected_project_id and selected_project_id != task.get('project_id'):
-                                        updates_dict['project_id'] = selected_project_id
-                                    selected_employee_id = employee_options_map.get(new_assignee_name)
-                                    if selected_employee_id and selected_employee_id != task.get('assigned_to'):
-                                        updates_dict['assigned_to'] = selected_employee_id
-                                    if new_priority != task.get('priority'):
-                                        updates_dict['priority'] = new_priority
-                                    naive_deadline = datetime.combine(new_due_date, new_due_time)
-                                    aware_deadline = naive_deadline.replace(tzinfo=local_tz)
-                                    original_description = task.get('description', '')
-                                    if new_description != original_description:
-                                        updates_dict['description'] = new_description
-                                    if aware_deadline.isoformat() != task.get('due_date'):
-                                        updates_dict['due_date'] = aware_deadline.isoformat()
-                                    if updates_dict:
-                                        st.session_state['scroll_to_task'] = task['id']
-                                        update_task_details(task['id'], updates_dict)
-                                        st.toast("Cập nhật thành công!", icon="✅")
-                                    else:
-                                        st.toast("Không có thay đổi nào để lưu.", icon="🤷‍♂️")
-
-                        st.divider()
-                        st.markdown("##### **Chi tiết & Thảo luận**")
-                        task_cols = st.columns([3, 1])
-                        with task_cols[1]:
-                            if st.button("🗑️ Xóa Công việc", key=f"delete_task_{task['id']}", type="secondary", use_container_width=True,disabled=is_expired) and not is_expired:
-                                st.session_state[f"confirm_delete_task_{task['id']}"] = True
-                        if st.session_state.get(f"confirm_delete_task_{task['id']}"):
-                            with st.warning(f"Bạn có chắc muốn xóa vĩnh viễn công việc **{task['task_name']}**?"):
-                                c1, c2 = st.columns(2)
-                                if c1.button("✅ Xóa", key=f"confirm_del_btn_{task['id']}", type="primary") and not is_expired:
-                                    delete_task(task['id'])
-                                    del st.session_state[f"confirm_delete_task_{task['id']}"]
+                                    update_task_details(task['id'], updates_dict)
+                                    st.toast("Cập nhật thành công!", icon="✅")
                                     st.rerun()
-                                if c2.button("❌ Hủy", key=f"cancel_del_btn_{task['id']}"):
-                                    del st.session_state[f"confirm_delete_task_{task['id']}"]
-                                    st.rerun()
-                        meta_cols = st.columns(3)
-                        meta_cols[0].markdown("**Độ ưu tiên**")
-                        meta_cols[0].write(task.get('priority', 'N/A'))
-                        meta_cols[1].markdown("**Hạn chót**")
-                        try:
-                            formatted_due_date_detail = datetime.fromisoformat(task['due_date']).astimezone(local_tz).strftime('%d/%m/%Y, %H:%M')
-                        except (ValueError, TypeError):
-                            formatted_due_date_detail = task.get('due_date', 'N/A')
-                        meta_cols[1].write(formatted_due_date_detail)
-                        meta_cols[2].markdown("**Người giao**")
-                        meta_cols[2].write(task.get('creator_name', 'N/A'))
-                        if task['description']:
-                            st.markdown("**Mô tả:**")
-                            st.info(task['description'])
-                        st.divider()
-                        st.markdown("##### **Thảo luận**")
-                        with st.container(height=250):
-                            if not comments:
-                                st.info("Chưa có bình luận nào.", icon="📄")
-                            else:
-                                for comment in comments:
-                                    commenter_name = comment.get('profiles', {}).get('full_name', "Người dùng ẩn")
-                                    is_manager_comment = 'manager' in comment.get('profiles', {}).get('role', 'employee')
-                                    comment_time_local = datetime.fromisoformat(comment['created_at']).astimezone(local_tz).strftime('%H:%M, %d/%m/%Y')
-                                    st.markdown(f"<div style='border-left: 3px solid {'#ff4b4b' if is_manager_comment else '#007bff'}; padding-left: 10px; margin-bottom: 10px;'><b>{commenter_name}</b> {'(Quản lý)' if is_manager_comment else ''} <span style='font-size: 0.8em; color: gray;'><i>({comment_time_local})</i></span>:<br>{comment['content']}</div>", unsafe_allow_html=True)
-                                    if comment.get('attachment_url'):
-                                        url = comment['attachment_url']
-                                        file_name = comment.get('attachment_original_name', 'downloaded_file')
-                                        
-                                        # --- BẮT ĐẦU THAY ĐỔI ---
-                                        # Kiểm tra đuôi file để quyết định cách hiển thị
-                                        is_image = file_name.lower().endswith(('.png', '.jpg', '.jpeg'))
+                                else:
+                                    st.toast("Không có thay đổi nào để lưu.", icon="🤷‍♂️")
 
-                                        if is_image:
-                                            # Nếu là ảnh, hiển thị trực tiếp
-                                            st.image(url, caption=f"Ảnh đính kèm: {file_name}", width=300)
-                                        else:
-                                            # Nếu là các loại file khác, dùng nút tải xuống
-                                            try:
-                                                response = requests.get(url)
-                                                response.raise_for_status() 
-                                                st.download_button(
-                                                    label="📂 Tải file đính kèm",
-                                                    data=response.content,
-                                                    file_name=file_name,
-                                                    key=f"download_manager_{task['id']}_{comment['id']}"
-                                                )
-                                                st.caption(f"{file_name}")
-                                            except requests.exceptions.RequestException as e:
-                                                st.error(f"Không thể tải tệp: {e}")
-                        with st.form(key=f"comment_form_manager_{task['id']}", clear_on_submit=True):
-                            comment_content = st.text_area("Thêm bình luận:", key=f"comment_text_manager_{task['id']}", label_visibility="collapsed", placeholder="Nhập bình luận của bạn...", disabled=is_expired)
-                            uploaded_file = st.file_uploader("Đính kèm file (Ảnh, Word, RAR, ZIP <2MB)", type=['jpg', 'png', 'doc', 'docx', 'rar', 'zip'], accept_multiple_files=False, key=f"file_manager_{task['id']}", disabled=is_expired)
-                            submitted_comment = st.form_submit_button("Gửi bình luận",disabled=is_expired)
-                            if submitted_comment and is_expired and (comment_content or uploaded_file):
-                                st.warning("⚠️ Nội dung của bạn CHƯA ĐƯỢC GỬI do phiên làm việc đã hết hạn. Dưới đây là bản sao để bạn tiện lưu lại:")
-                                if comment_content:
-                                    st.code(comment_content, language=None)
-                                if uploaded_file:
-                                    st.info(f"Bạn cũng đã đính kèm tệp: **{uploaded_file.name}**. Vui lòng tải lại tệp này sau khi đăng nhập.")
-                            if submitted_comment and (comment_content or uploaded_file) and not is_expired:
-                                st.session_state['scroll_to_task'] = task['id']
-                                add_comment(task['id'], manager_profile['id'], comment_content, uploaded_file)
-                                
-                                # Xóa cache chỉ của hàm fetch_comments để cập nhật ngay
-                                fetch_comments.clear()
-
+                    st.divider()
+                    st.markdown("##### **Chi tiết & Thảo luận**")
+                    task_cols = st.columns([3, 1])
+                    with task_cols[1]:
+                        if st.button("🗑️ Xóa Công việc", key=f"delete_task_{task['id']}", type="secondary", use_container_width=True,disabled=is_expired) and not is_expired:
+                            st.session_state[f"confirm_delete_task_{task['id']}"] = True
+                    if st.session_state.get(f"confirm_delete_task_{task['id']}"):
+                        with st.warning(f"Bạn có chắc muốn xóa vĩnh viễn công việc **{task['task_name']}**?"):
+                            c1, c2 = st.columns(2)
+                            if c1.button("✅ Xóa", key=f"confirm_del_btn_{task['id']}", type="primary") and not is_expired:
+                                delete_task(task['id'])
+                                del st.session_state[f"confirm_delete_task_{task['id']}"]
                                 st.rerun()
-                    st.markdown("</div>", unsafe_allow_html=True)
+                            if c2.button("❌ Hủy", key=f"cancel_del_btn_{task['id']}"):
+                                del st.session_state[f"confirm_delete_task_{task['id']}"]
+                                st.rerun()
+                    meta_cols = st.columns(3)
+                    meta_cols[0].markdown("**Độ ưu tiên**"); meta_cols[0].write(task.get('priority', 'N/A'))
+                    meta_cols[1].markdown("**Hạn chót**")
+                    try: formatted_due_date_detail = datetime.fromisoformat(task['due_date']).astimezone(local_tz).strftime('%d/%m/%Y, %H:%M')
+                    except (ValueError, TypeError): formatted_due_date_detail = task.get('due_date', 'N/A')
+                    meta_cols[1].write(formatted_due_date_detail)
+                    meta_cols[2].markdown("**Người giao**"); meta_cols[2].write(task.get('creator_name', 'N/A'))
+                    if task['description']: st.markdown("**Mô tả:**"); st.info(task['description'])
+                    st.divider()
+                    st.markdown("##### **Thảo luận**")
+                    with st.container(height=250):
+                        if not comments: st.info("Chưa có bình luận nào.", icon="📄")
+                        else:
+                            for comment in comments:
+                                commenter_name = comment.get('profiles', {}).get('full_name', "Người dùng ẩn")
+                                is_manager_comment = 'manager' in comment.get('profiles', {}).get('role', 'employee')
+                                comment_time_local = datetime.fromisoformat(comment['created_at']).astimezone(local_tz).strftime('%H:%M, %d/%m/%Y')
+                                st.markdown(f"<div style='border-left: 3px solid {'#ff4b4b' if is_manager_comment else '#007bff'}; padding-left: 10px; margin-bottom: 10px;'><b>{commenter_name}</b> {'(Quản lý)' if is_manager_comment else ''} <span style='font-size: 0.8em; color: gray;'><i>({comment_time_local})</i></span>:<br>{comment['content']}</div>", unsafe_allow_html=True)
+                                if comment.get('attachment_url'):
+                                    url = comment['attachment_url']
+                                    file_name = comment.get('attachment_original_name', 'downloaded_file')
+                                    is_image = file_name.lower().endswith(('.png', '.jpg', '.jpeg'))
+                                    if is_image: st.image(url, caption=f"Ảnh đính kèm: {file_name}", width=300)
+                                    else:
+                                        try:
+                                            response = requests.get(url); response.raise_for_status() 
+                                            st.download_button(label="📂 Tải file đính kèm", data=response.content, file_name=file_name, key=f"download_manager_{task['id']}_{comment['id']}")
+                                            st.caption(f"{file_name}")
+                                        except requests.exceptions.RequestException as e: st.error(f"Không thể tải tệp: {e}")
+                    with st.form(key=f"comment_form_manager_{task['id']}", clear_on_submit=True):
+                        comment_content = st.text_area("Thêm bình luận:", key=f"comment_text_manager_{task['id']}", label_visibility="collapsed", placeholder="Nhập bình luận của bạn...", disabled=is_expired)
+                        uploaded_file = st.file_uploader("Đính kèm file (Ảnh, Word, RAR, ZIP <2MB)", type=['jpg', 'png', 'doc', 'docx', 'rar', 'zip'], accept_multiple_files=False, key=f"file_manager_{task['id']}", disabled=is_expired)
+                        submitted_comment = st.form_submit_button("Gửi bình luận",disabled=is_expired)
+                        if submitted_comment and (comment_content or uploaded_file) and not is_expired:
+                            st.session_state['scroll_to_task'] = task['id']
+                            add_comment(task['id'], manager_profile['id'], comment_content, uploaded_file)
+                            fetch_comments.clear()
+                            st.rerun()
+
+                st.markdown("</div>", unsafe_allow_html=True)
+    # ==============================================================================
+    # KẾT THÚC: MÃ NGUỒN THAY THẾ
+    # ==============================================================================
 
 
     with tab_employees:
