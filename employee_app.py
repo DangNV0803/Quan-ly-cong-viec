@@ -177,8 +177,8 @@ def update_task_status(task_id: int, new_status: str):
     """Updates the status of a specific task."""
     try:
         supabase.table('tasks').update({'status': new_status}).eq('id', task_id).execute()
-        st.cache_data.clear()
-        st.toast(f"Đã cập nhật trạng thái!", icon="🔄")
+        # st.cache_data.clear()
+        st.toast(f"Đã cập nhật trạng thái! Sau 120 giây trạng thái sẽ tự chuyển đổi", icon="🔄")
     except Exception as e:
         st.error(f"Lỗi khi cập nhật trạng thái: {e}")
 
@@ -491,30 +491,26 @@ else:
                                 )
 
                                 if comment.get('attachment_url'):
-                                    url = comment['attachment_url']
-                                    file_name = comment.get('attachment_original_name', 'downloaded_file')
+                                    original_url = comment['attachment_url']
+                                    original_filename = comment.get('attachment_original_name', 'downloaded_file')
                                     
-                                    # --- BẮT ĐẦU THAY ĐỔI ---
-                                    # Kiểm tra đuôi file để quyết định cách hiển thị
-                                    is_image = file_name.lower().endswith(('.png', '.jpg', '.jpeg'))
-
-                                    if is_image:
-                                        # Nếu là ảnh, hiển thị trực tiếp
-                                        st.image(url, caption=f"Ảnh đính kèm: {file_name}", width=300) 
+                                    # Xử lý file ảnh như cũ, không tốn Egress server
+                                    if original_filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                                        st.image(original_url, caption=f"Ảnh đính kèm: {original_filename}", width=300)
                                     else:
-                                        # Nếu là các loại file khác, dùng nút tải xuống
-                                        try:
-                                            response = requests.get(url)
-                                            response.raise_for_status()
-                                            st.download_button(
-                                                label="📂 Tải file đính kèm",
-                                                data=response.content,
-                                                file_name=file_name,
-                                                key=f"download_emp_{task['id']}_{comment['id']}"
-                                            )
-                                            st.caption(f"{file_name}")
-                                        except requests.exceptions.RequestException as e:
-                                            st.error(f"Không thể tải tệp: {e}")
+                                        # Tạo URL để tải file (dù tên có thể sai)
+                                        base_url = original_url.split('?')[0]
+                                        url_for_download = f"{base_url}?download"
+                                        
+                                        # 1. Hiển thị link để người dùng nhấn vào và tải
+                                        st.markdown(
+                                            f'<a href="{url_for_download}" target="_blank" style="text-decoration: none;">📂 Nhấn vào đây để tải file</a>', 
+                                            unsafe_allow_html=True
+                                        )
+                                        
+                                        # 2. Thêm cảnh báo và hiển thị tên file gốc trong st.code() để dễ sao chép
+                                        st.caption("⚠️ **QUAN TRỌNG:** Tên file tải về có thể sai. Hãy **sao chép tên đúng** dưới đây và dán vào lúc lưu file.")
+                                        st.code(original_filename)
                                     # --- KẾT THÚC THAY ĐỔI ---
                     
                     with st.form(key=f"comment_form_{task['id']}", clear_on_submit=True):

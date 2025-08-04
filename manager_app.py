@@ -8,6 +8,12 @@ from zoneinfo import ZoneInfo
 import re
 import unicodedata
 import time
+# import supabase
+# import sys
+
+# # Hai dòng cảnh báo để chẩn đoán
+# st.warning(f"Phiên bản Supabase mà Streamlit đang sử dụng: {supabase.__version__}")
+# st.warning(f"Streamlit đang chạy bằng Python tại: {sys.executable}")
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -119,6 +125,7 @@ def fetch_comments(task_id: int):
     except Exception as e:
         st.error(f"Lỗi khi tải bình luận: {e}")
         return []
+
 
 def get_deadline_color(due_date_str: str) -> str:
     """
@@ -962,16 +969,26 @@ else:
                                 comment_time_local = datetime.fromisoformat(comment['created_at']).astimezone(local_tz).strftime('%H:%M, %d/%m/%Y')
                                 st.markdown(f"<div style='border-left: 3px solid {'#ff4b4b' if is_manager_comment else '#007bff'}; padding-left: 10px; margin-bottom: 10px;'><b>{commenter_name}</b> {'(Quản lý)' if is_manager_comment else ''} <span style='font-size: 0.8em; color: gray;'><i>({comment_time_local})</i></span>:<br>{comment['content']}</div>", unsafe_allow_html=True)
                                 if comment.get('attachment_url'):
-                                    url = comment['attachment_url']
-                                    file_name = comment.get('attachment_original_name', 'downloaded_file')
-                                    is_image = file_name.lower().endswith(('.png', '.jpg', '.jpeg'))
-                                    if is_image: st.image(url, caption=f"Ảnh đính kèm: {file_name}", width=300)
+                                    original_url = comment['attachment_url']
+                                    original_filename = comment.get('attachment_original_name', 'downloaded_file')
+                                    
+                                    # Xử lý file ảnh như cũ
+                                    if original_filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                                        st.image(original_url, caption=f"Ảnh: {original_filename}", width=300)
                                     else:
-                                        try:
-                                            response = requests.get(url); response.raise_for_status() 
-                                            st.download_button(label="📂 Tải file đính kèm", data=response.content, file_name=file_name, key=f"download_manager_{task['id']}_{comment['id']}")
-                                            st.caption(f"{file_name}")
-                                        except requests.exceptions.RequestException as e: st.error(f"Không thể tải tệp: {e}")
+                                        # Tạo URL để tải file
+                                        base_url = original_url.split('?')[0]
+                                        url_for_download = f"{base_url}?download"
+                                        
+                                        # 1. Hiển thị link để người dùng nhấn vào và tải
+                                        st.markdown(
+                                            f'<a href="{url_for_download}" target="_blank" style="text-decoration: none;">📂 Nhấn vào đây để tải file</a>', 
+                                            unsafe_allow_html=True
+                                        )
+                                        
+                                        # 2. Thêm câu cảnh báo và hiển thị tên file gốc trong st.code()
+                                        st.caption("⚠️ **QUAN TRỌNG:** Tên file tải về có thể sai. Hãy **sao chép tên đúng** dưới đây và dán vào lúc lưu file.")
+                                        st.code(original_filename)
                     with st.form(key=f"comment_form_manager_{task['id']}", clear_on_submit=True):
                         comment_content = st.text_area("Thêm bình luận:", key=f"comment_text_manager_{task['id']}", label_visibility="collapsed", placeholder="Nhập bình luận của bạn...", disabled=is_expired)
                         uploaded_file = st.file_uploader("Đính kèm file (Ảnh, Word, RAR, ZIP <2MB)", type=['jpg', 'png', 'doc', 'docx', 'rar', 'zip'], accept_multiple_files=False, key=f"file_manager_{task['id']}", disabled=is_expired)
