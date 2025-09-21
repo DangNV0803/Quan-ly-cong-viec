@@ -938,18 +938,29 @@ else:
                     st.markdown("##### **Chi tiết & Thảo luận**")
                     task_cols = st.columns([3, 1])
                     with task_cols[1]:
-                        if st.button("🗑️ Xóa Công việc", key=f"delete_task_{task['id']}", type="secondary", use_container_width=True,disabled=is_expired) and not is_expired:
-                            st.session_state[f"confirm_delete_task_{task['id']}"] = True
-                    if st.session_state.get(f"confirm_delete_task_{task['id']}"):
-                        with st.warning(f"Bạn có chắc muốn xóa vĩnh viễn công việc **{task['task_name']}**?"):
+                        # Khi nhấn nút "Xóa", ta lưu thông tin của task cần xóa vào một biến session_state duy nhất
+                        if st.button("🗑️ Xóa Công việc", key=f"delete_task_{task['id']}", type="secondary", use_container_width=True, disabled=is_expired) and not is_expired:
+                            st.session_state.task_to_delete = {'id': task['id'], 'name': task['task_name']}
+                            st.rerun() # Chạy lại để hiển thị hộp thoại xác nhận
+
+                    # Sau vòng lặp, ta kiểm tra xem có task nào đang chờ xóa không
+                    # Di chuyển logic này ra ngoài vòng lặp chính là không cần thiết,
+                    # nhưng ta sẽ kiểm tra xem ID của task hiện tại có khớp với task đang chờ xóa không.
+                    if 'task_to_delete' in st.session_state and st.session_state.task_to_delete['id'] == task['id']:
+                        # Chỉ hiển thị hộp thoại xác nhận cho task đã được chọn
+                        with st.warning(f"Bạn có chắc muốn xóa vĩnh viễn công việc **{st.session_state.task_to_delete['name']}**?"):
                             c1, c2 = st.columns(2)
-                            if c1.button("✅ Xóa", key=f"confirm_del_btn_{task['id']}", type="primary") and not is_expired:
-                                delete_task(task['id'])
-                                del st.session_state[f"confirm_delete_task_{task['id']}"]
-                                st.rerun()
-                            if c2.button("❌ Hủy", key=f"cancel_del_btn_{task['id']}"):
-                                del st.session_state[f"confirm_delete_task_{task['id']}"]
-                                st.rerun()
+                            
+                            # Nút "Xác nhận" sẽ xóa task và xóa biến session_state
+                            if c1.button("✅ Xóa", key="confirm_delete_button", type="primary") and not is_expired:
+                                delete_task(st.session_state.task_to_delete['id'])
+                                del st.session_state.task_to_delete  # Xóa biến trạng thái
+                                st.rerun() # Chạy lại để làm mới giao diện
+                            
+                            # Nút "Hủy" chỉ cần xóa biến session_state
+                            if c2.button("❌ Hủy", key="cancel_delete_button"):
+                                del st.session_state.task_to_delete  # Xóa biến trạng thái
+                                st.rerun() # Chạy lại để đóng hộp thoại
                     meta_cols = st.columns(3)
                     meta_cols[0].markdown("**Độ ưu tiên**"); meta_cols[0].write(task.get('priority', 'N/A'))
                     meta_cols[1].markdown("**Hạn chót**")
