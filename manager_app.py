@@ -916,21 +916,45 @@ else:
                             submitted_edit = st.form_submit_button("💾 Lưu thay đổi", use_container_width=True, type="primary",disabled=is_expired)
                             if submitted_edit and not is_expired:
                                 updates_dict = {}
-                                if new_task_name and new_task_name != task.get('task_name'): updates_dict['task_name'] = new_task_name
+
+                                # 1. Kiểm tra Tên công việc
+                                if new_task_name and new_task_name != task.get('task_name'):
+                                    updates_dict['task_name'] = new_task_name
+                                
+                                # 2. Kiểm tra Dự án
                                 selected_project_id = project_options_map_edit.get(new_project_name)
-                                if selected_project_id and selected_project_id != task.get('project_id'): updates_dict['project_id'] = selected_project_id
+                                if selected_project_id and selected_project_id != task.get('project_id'):
+                                    updates_dict['project_id'] = selected_project_id
+                                
+                                # 3. Kiểm tra Người thực hiện
                                 selected_employee_id = employee_options_map.get(new_assignee_name)
-                                if selected_employee_id and selected_employee_id != task.get('assigned_to'): updates_dict['assigned_to'] = selected_employee_id
-                                if new_priority != task.get('priority'): updates_dict['priority'] = new_priority
+                                if selected_employee_id and selected_employee_id != task.get('assigned_to'):
+                                    updates_dict['assigned_to'] = selected_employee_id
+                                
+                                # 4. Kiểm tra Độ ưu tiên
+                                if new_priority != task.get('priority'):
+                                    updates_dict['priority'] = new_priority
+                                
+                                # 5. Kiểm tra Deadline (ĐÃ SỬA LỖI)
                                 naive_deadline = datetime.combine(new_due_date, new_due_time)
                                 aware_deadline = naive_deadline.replace(tzinfo=local_tz)
-                                if new_description != task.get('description', ''): updates_dict['description'] = new_description
-                                if aware_deadline.isoformat() != task.get('due_date'): updates_dict['due_date'] = aware_deadline.isoformat()
+                                # <<< SỬA LỖI: Đưa câu lệnh if này ra ngoài, ngang hàng với các câu lệnh if khác
+                                if aware_deadline.isoformat() != task.get('due_date'):
+                                    updates_dict['due_date'] = aware_deadline.isoformat()
+
+                                # 6. Kiểm tra Mô tả chi tiết (ĐÃ SỬA LỖI)
+                                # <<< SỬA LỖI: Câu lệnh if này giờ chỉ kiểm tra cho riêng description
+                                if new_description != task.get('description', ''):
+                                    updates_dict['description'] = new_description
+
+                                # Sau khi đã kiểm tra tất cả các trường
                                 if updates_dict:
                                     st.session_state['scroll_to_task'] = task['id']
                                     update_task_details(task['id'], updates_dict)
-                                    st.toast("Cập nhật thành công!", icon="✅")
-                                    st.rerun()
+                                    # Không cần st.rerun() ở đây vì update_task_details đã xóa cache
+                                    # và các callback sẽ tự động kích hoạt cập nhật giao diện.
+                                    # Tuy nhiên, nếu bạn muốn đảm bảo giao diện mới nhất ngay lập tức,
+                                    # có thể giữ lại st.rerun().
                                 else:
                                     st.toast("Không có thay đổi nào để lưu.", icon="🤷‍♂️")
 
