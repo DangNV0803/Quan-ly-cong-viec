@@ -135,8 +135,8 @@ def add_comment(task_id: int, user_id: str, content: str, uploaded_file=None):
     attachment_original_name = None 
 
     if uploaded_file:
-        if uploaded_file.size > 2 * 1024 * 1024:
-            st.error("Lỗi: Kích thước file không được vượt quá 2MB.")
+        if uploaded_file.size > 10 * 1024 * 1024:
+            st.error("Lỗi: Kích thước file không được vượt quá 10MB.")
             return
 
         # Lưu lại tên gốc để hiển thị
@@ -515,7 +515,13 @@ else:
                     
                     with st.form(key=f"comment_form_{task['id']}", clear_on_submit=True):
                         comment_content = st.text_area("Thêm bình luận của bạn:", key=f"comment_text_{task['id']}", label_visibility="collapsed", placeholder="Nhập trao đổi về công việc...",disabled=is_task_locked)
-                        uploaded_file = st.file_uploader("Đính kèm file (Ảnh, Word, RAR, ZIP <2MB)", type=['jpg', 'png', 'doc', 'docx', 'rar', 'zip'], accept_multiple_files=False, key=f"file_{task['id']}",disabled=is_task_locked)
+                        uploaded_file = st.file_uploader(
+                            "Đính kèm file (Ảnh, Word, Excel, PDF, RAR, ZIP <10MB)", 
+                            type=['jpg', 'png', 'doc', 'docx', 'rar', 'zip', 'pdf', 'xls', 'xlsx'], 
+                            accept_multiple_files=False, 
+                            key=f"file_{task['id']}",
+                            disabled=is_task_locked
+                        )
                         
                         submitted_comment = st.form_submit_button("Gửi bình luận",disabled=is_task_locked)
                         if submitted_comment and is_task_locked and (comment_content or uploaded_file):

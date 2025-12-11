@@ -240,8 +240,8 @@ def add_comment(task_id: int, user_id: str, content: str, uploaded_file=None):
     attachment_original_name = None 
 
     if uploaded_file:
-        if uploaded_file.size > 2 * 1024 * 1024:
-            st.error("Lỗi: Kích thước file không được vượt quá 2MB.")
+        if uploaded_file.size > 10 * 1024 * 1024:
+            st.error("Lỗi: Kích thước file không được vượt quá 10MB.")
             return
 
         # Lưu lại tên gốc để hiển thị
@@ -1026,7 +1026,13 @@ else:
                                         st.code(original_filename)
                     with st.form(key=f"comment_form_manager_{task['id']}", clear_on_submit=True):
                         comment_content = st.text_area("Thêm bình luận:", key=f"comment_text_manager_{task['id']}", label_visibility="collapsed", placeholder="Nhập bình luận của bạn...", disabled=is_expired)
-                        uploaded_file = st.file_uploader("Đính kèm file (Ảnh, Word, RAR, ZIP <2MB)", type=['jpg', 'png', 'doc', 'docx', 'rar', 'zip'], accept_multiple_files=False, key=f"file_manager_{task['id']}", disabled=is_expired)
+                        uploaded_file = st.file_uploader(
+                            "Đính kèm file (Ảnh, Word, Excel, PDF, RAR, ZIP <10MB)", 
+                            type=['jpg', 'png', 'doc', 'docx', 'rar', 'zip', 'pdf', 'xls', 'xlsx'], 
+                            accept_multiple_files=False, 
+                            key=f"file_manager_{task['id']}", 
+                            disabled=is_expired
+                        )
                         submitted_comment = st.form_submit_button("Gửi bình luận",disabled=is_expired)
                         if submitted_comment and (comment_content or uploaded_file) and not is_expired:
                             st.session_state['scroll_to_task'] = task['id']
